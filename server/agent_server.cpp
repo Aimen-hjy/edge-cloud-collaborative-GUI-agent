@@ -27,8 +27,10 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -52,6 +54,37 @@
 
 using json = nlohmann::json;
 using namespace MNN::Transformer;
+
+// ====================================================================
+// base64_decode — minimal decoder, no external dependency
+// ====================================================================
+static std::string base64_decode(const std::string& in) {
+    static const std::string tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int T[256];
+    for (int i = 0; i < 256; ++i) T[i] = -1;
+    for (int i = 0; i < 64; ++i) T[static_cast<unsigned char>(tbl[i])] = i;
+
+    std::string out;
+    int val = 0, valb = -8;
+    for (unsigned char c : in) {
+        if (T[c] == -1) break;
+        val = (val << 6) + T[c];
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back(static_cast<char>((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+    return out;
+}
+
+// 图片临时目录：可用 AGENT_IMG_DIR 覆盖，默认系统 temp 下的 agent_imgs
+static std::string DefaultImgDir() {
+    const char* env = std::getenv("AGENT_IMG_DIR");
+    if (env && *env) return env;
+    return (std::filesystem::temp_directory_path() / "agent_imgs").string();
+}
 
 // ====================================================================
 // Utf8StreamProcessor — Assembles complete UTF-8 characters from
@@ -203,7 +236,8 @@ class AgentServer {
 public:
     AgentServer(std::unique_ptr<Llm> llm, const std::string& host, int port,
                 const std::string& model_name = "unknown")
-        : llm_(std::move(llm)), host_(host), port_(port), model_name_(model_name) {}
+        : llm_(std::move(llm)), host_(host), port_(port), model_name_(model_name),
+          img_dir_(DefaultImgDir()) {}
 
     void Start() {
         // Single-thread: MNN Llm is NOT thread-safe
@@ -589,6 +623,54 @@ private:
         return result;
     }
 
+    // ── ExtractContent ────────────────────────────────
+
+    /**
+     * 抽取消息文本内容，同时解码内嵌图片。
+     *
+     * 支持 OpenAI 视觉格式：content 为数组，元素形如
+     *   {"type":"text","text":"..."}
+     *   {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}
+     * base64 解码后写入 img_dir_ 临时文件，在文本里用 <img>路径</img> 引用。
+     * MNN 的 Omni 引擎识别 <img> 标签并转成 vision token。
+     */
+    std::string ExtractContent(const json& msg) {
+        if (!msg.contains("content") || msg["content"].is_string()) {
+            return msg.value("content", "");
+        }
+        if (!msg["content"].is_array()) {
+            return "";
+        }
+
+        std::string text;
+        for (const auto& part : msg["content"]) {
+            if (!part.is_object()) continue;
+            if (part.value("type", "") == "text" && part.contains("text")) {
+                text += part["text"].get<std::string>();
+                continue;
+            }
+            const json& iu = part.contains("image_url") ? part["image_url"] : part;
+            if (!iu.is_object() || !iu.contains("url")) continue;
+            std::string url = iu.value("url", "");
+            if (url.rfind("data:", 0) == 0) {
+                size_t comma = url.find(',');
+                if (comma == std::string::npos) continue;
+                std::string bytes = base64_decode(url.substr(comma + 1));
+                if (bytes.empty()) continue;
+                std::filesystem::create_directories(img_dir_);
+                std::string fname = img_dir_ + "/img_" +
+                    std::to_string(img_counter_++) + ".png";
+                std::ofstream ofs(fname, std::ios::binary);
+                ofs.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+                text += "<img>" + fname + "</img>\n";
+            } else {
+                // 非 data URL：假定是可被 MNN 直接打开的文件路径/URL
+                text += "<img>" + url + "</img>\n";
+            }
+        }
+        return text;
+    }
+
     // ── BuildChatMessages ────────────────────────────
 
     /**
@@ -606,7 +688,7 @@ private:
                            std::string& system_prompt_out) {
         for (const auto& msg : messages_json) {
             std::string role = msg.value("role", "");
-            std::string content = msg.value("content", "");
+            std::string content = ExtractContent(msg);
 
             if (role == "system") {
                 system_prompt_out = content;
@@ -675,6 +757,8 @@ private:
     httplib::Server svr_;
     std::mutex llm_mutex_;
     float applied_temperature_ = -1.0f;  // last temperature applied to the sampler
+    std::string img_dir_;                // 图片临时目录（接收的截图落地处）
+    int img_counter_ = 0;                // 图片文件名自增序号
 };
 
 // ====================================================================
