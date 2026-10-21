@@ -39,7 +39,7 @@
 | 层级 | 处理者 | 覆盖的任务 | 耗时（热） | 失败行为 |
 |---|---|---|---|---|
 | **层1 关键词查询** | `agent/device/system_query.py` | 电量 / 时间 / 存储 / 内存 / 亮度 / WiFi / 蓝牙 | **~0.12s** | 不匹配则落到层1.5 |
-| **层1.5 本地确定性** | `system_ops.try_local_intent` | 系统开关（关蓝牙/调亮度/静音）、打开 App、回桌面/返回 | **~0.4s** | 表外则落到层1.6 |
+| **层1.5 本地确定性** | `system_ops.try_local_intent` | 系统开关（关蓝牙/调亮度/静音）、**设置子页 intent**（进入WiFi/蓝牙设置）、打开 App、回桌面/返回 | **~0.4s** | 表外则落到层1.6 |
 | **层1.6 复合拆解** | `system_ops.launch_leading_app` | 「打开X，做Y」→ 本地拉起 X，Y 交云端 | **~0.4s** | 非「打开X」前缀则落层2 |
 | **层2 模型系统路由** | 本地 Qwen3-**0.6B**（`agent/tools/system_ops.py`） | 关键词表接不住的变化说法 | **~0.5~0.9s** | 输出 `escalate` 升级云端 |
 | **层3/4 云端 GUI 循环** | 云端 `qwen3-omni-flash` | 点控件 / 输入 / 滑动 | **~2.5s/步** | — |
@@ -204,3 +204,7 @@ tap/type 一步从 15~28s 降到 ~3s，且坐标用归一化值天然分辨率�
 - **云端弱模型导航不稳**（核心遗留）：`qwen3-omni-flash` 在"打开屏幕上没有的 App"、
   "进入X页面"时易输出 home/swipe/query 而非点击可见控件，是成功率的主要天花板。
   缓解：层1.5/1.6 本地确定性兜底 + 复合任务拆解，把云端看图步骤压到最少。
+- **平板两栏设置点不中**（已修）：本机设置是 master-detail 两栏布局，`uiautomator dump`
+  只 dump 左栏，云端按正确坐标点左栏 WLAN 行也不跳转（焦点/截图均无变化）。改为
+  `am start -a android.settings.*_SETTINGS` intent 直达子页（`_try_settings_page`），
+  本地 <0.5s 且 100% 可靠。详见 [agent/tools/system_ops.py](agent/tools/system_ops.py)。
