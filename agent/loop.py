@@ -53,6 +53,11 @@ def run_task(task: str, client: Optional[LLMClient] = None,
     remaining = launch_leading_app(task)
     if remaining is not None:
         task = remaining
+        # 拆出的剩余子任务（如「进入WiFi」）可能本身也能本地短路（设置页 intent），
+        # 再走一次确定性层，能省掉一次云端看图。
+        ans = try_local_intent(remaining)
+        if ans is not None:
+            return {"success": True, "reason": ans, "steps": 0}
 
     # 注意：这里不再 reset_kv。路由请求走 prefix_cache（agent_server 端把恒定的
     # system 前缀 KV 保留复用），reset 会把这份前缀缓存也清掉，反而拖慢每轮路由。

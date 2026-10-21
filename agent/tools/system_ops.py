@@ -232,6 +232,10 @@ def try_local_intent(task: str) -> Optional[str]:
     """
     if not task:
         return None
+    # 设置子页面 intent 优先于开关表：「打开蓝牙设置」是进蓝牙设置页，不是打开蓝牙开关
+    page = _try_settings_page(task)
+    if page is not None:
+        return page
     low = task.lower()
     for keywords, cap, params in _KEYWORD_OPS:
         if any(k in low for k in keywords):
@@ -254,6 +258,55 @@ def _try_nav(task: str) -> Optional[str]:
     if any(w in task for w in _BACK_WORDS):
         adb.back()
         return "已返回上一页"
+    return None
+
+
+# 设置子页面 → Android settings intent action + 中文回显。
+# 「进入WiFi」「打开显示设置」这类直接 am start 系统设置页，比云端看图点列表项稳得多——
+# 尤其本机设置是平板两栏布局（master-detail），uiautomator 只 dump 左栏，云端点
+# 左栏 WLAN 行（坐标正确）也不跳转，纯靠 intent 才能可靠直达。
+SETTINGS_PAGES: list[tuple[tuple[str, ...], str, str]] = [
+    (("wifi", "wlan", "无线"), "android.settings.WIFI_SETTINGS", "WiFi"),
+    (("蓝牙", "bluetooth"), "android.settings.BLUETOOTH_SETTINGS", "蓝牙"),
+    (("显示", "屏幕", "亮度"), "android.settings.DISPLAY_SETTINGS", "显示"),
+    (("声音", "音量", "铃声"), "android.settings.SOUND_SETTINGS", "声音"),
+    (("电池", "电量"), "android.settings.BATTERY_SAVER_SETTINGS", "电池"),
+    (("存储", "空间"), "android.settings.INTERNAL_STORAGE_SETTINGS", "存储"),
+    (("位置", "定位"), "android.settings.LOCATION_SOURCE_SETTINGS", "位置"),
+    (("飞行模式",), "android.settings.AIRPLANE_MODE_SETTINGS", "飞行模式"),
+    (("应用",), "android.settings.APPLICATION_SETTINGS", "应用"),
+    (("通知",), "android.settings.NOTIFICATION_SETTINGS", "通知"),
+    (("关于", "设备信息"), "android.settings.DEVICE_INFO_SETTINGS", "关于本机"),
+]
+
+
+def _try_settings_page(task: str) -> Optional[str]:
+    """「进入WiFi」「打开显示设置」「蓝牙设置」→ am start 对应系统设置页。
+
+    只认两种明确形态：①「进入/转到/到 X」；②「X设置/X页面/X页」（含「打开X设置」）。
+    「打开WiFi」「关闭蓝牙」这类开关、「调亮屏幕」这类亮度操作不在这里处理，
+    避免和 _KEYWORD_OPS 的开关语义打架。
+    """
+    t = task.strip()
+    core = ""
+    m = re.match(r"^(?:进入|转到|到)\s*(.+)$", t)          # 进入WiFi
+    if m:
+        core = m.group(1).strip()
+    else:
+        m = re.match(r"^(.+?)(?:设置|页面|页)$", t)         # 蓝牙设置 / 显示页面
+        if m:
+            core = m.group(1).strip()
+        else:
+            m = re.match(r"^(?:打开|启动|开启)\s*(.+)$", t)  # 打开蓝牙设置
+            if m and re.search(r"(?:设置|页面|页)$", m.group(1).strip()):
+                core = re.sub(r"(?:设置|页面|页)$", "", m.group(1).strip()).strip()
+    if not core:
+        return None
+    low = core.lower()
+    for keys, action, label in SETTINGS_PAGES:
+        if any(k in low for k in keys):
+            adb.run_text("shell", "am", "start", "-a", action)
+            return f"已进入{label}"
     return None
 
 
