@@ -31,14 +31,20 @@ class LLMClient:
         return self._clients[endpoint.base_url]
 
     def chat(self, endpoint: LLMEndpoint, messages: list[dict],
-             temperature: float = 0.0, max_tokens: int = 1024):
-        """发起一次对话，返回 choices[0].message（含 .content / .tool_calls）。"""
+             temperature: float = 0.0, max_tokens: int = 1024,
+             prefix_cache: bool = False):
+        """发起一次对话，返回 choices[0].message（含 .content / .tool_calls）。
+
+        prefix_cache=True 时透传 agent_server 的前缀缓存开关：路由请求的 system
+        提示词跨轮恒定，服务端 prefill 一次后每轮只补「任务」delta，省下重复 prefill。
+        """
         client = self._get(endpoint)
         resp = client.chat.completions.create(
             model=endpoint.model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_body={"prefix_cache": True} if prefix_cache else None,
         )
         return resp.choices[0].message
 

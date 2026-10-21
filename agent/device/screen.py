@@ -4,9 +4,12 @@ Grounding 的核心输入：把 XML 抽成带编号的控件，端侧文本模�
 """
 from __future__ import annotations
 
+import io
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+
+from PIL import Image
 
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
@@ -89,3 +92,42 @@ def to_prompt(elems: list[UIElement]) -> str:
 def signature(xml_str: str) -> tuple[str, ...]:
     """屏幕内容指纹，用于判断一次动作后页面是否发生变化。"""
     return tuple(e.label for e in parse_ui(xml_str))
+
+
+def img_signature(png_bytes: bytes, grid: int = 8) -> tuple[int, ...]:
+    """截图粗粒度指纹：把 PNG 缩成 grid×grid 灰度图。
+
+    用于没有 UI 树时判断页面是否变化。粗粒度缩放能容忍状态栏时钟、
+    图标微动等噪声，只对真正的页面跳转敏感。
+    """
+    img = Image.open(io.BytesIO(png_bytes)).convert("L")
+    img = img.resize((grid, grid))
+    return tuple(img.getdata())
+
+
+def resize_png(png_bytes: bytes, max_side: int = 1024) -> bytes:
+    """把 PNG 长边压到 max_side 像素，返回新的 PNG 字节。
+
+    云端 VL 模型按像素切 image token，原图（1600×2400）token 量是压缩后
+    的 4~6 倍，直接拖慢 prefill 和上传。坐标用 0~1000 归一化，与分辨率无关，
+    所以缩图基本不损接地精度。长边不超过 max_side 时原样返回。
+    """
+    img = Image.open(io.BytesIO(png_bytes))
+    w, h = img.size
+    if max(w, h) <= max_side:
+        return png_bytes
+    scale = max_side / max(w, h)
+    img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def img_changed(before: bytes, after: bytes, tol: float = 0.05) -> bool:
+    """两张截图是否发生了明显变化（变化像素占比 > tol）。"""
+    a = img_signature(before)
+    b = img_signature(after)
+    if not a or len(a) != len(b):
+        return True
+    diff = sum(1 for pa, pb in zip(a, b) if abs(pa - pb) > 16)
+    return diff / len(a) > tol

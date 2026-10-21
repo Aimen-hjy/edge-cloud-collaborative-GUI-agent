@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -28,15 +29,34 @@ LOCAL_ENDPOINT = LLMEndpoint(
     api_key="local",
 )
 
-# ── 云端：阿里百炼 qwen3-vl-max（多模态旗舰）─────────
+# ── 云端：阿里百炼 qwen3.8-omni-flash（多模态旗舰）───
+def _read_api_key() -> str:
+    """从项目根目录的 qwen3.8-apikey 读取云端 API Key（该文件已 gitignore）。
+
+    优先级：环境变量 DASHSCOPE_API_KEY > 密钥文件。文件不存在时返回空串。
+    """
+    env = os.getenv("DASHSCOPE_API_KEY")
+    if env:
+        return env
+    key_file = Path(__file__).resolve().parent.parent / "qwen3.8-apikey"
+    try:
+        return key_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 CLOUD_ENDPOINT = LLMEndpoint(
     base_url=os.getenv(
         "CLOUD_BASE_URL",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ),
-    model=os.getenv("CLOUD_MODEL", "qwen3-vl-max"),
-    api_key=os.getenv("DASHSCOPE_API_KEY", ""),
+    model=os.getenv("CLOUD_MODEL", "qwen3-omni-flash"),
+    api_key=_read_api_key(),
 )
+
+# 上传云端前把截图长边压到这个像素值：VL 模型的 image token 数与像素量正相关，
+# 压小图能显著砍 prefill + 上传耗时，且归一化坐标(0~1000)不受分辨率影响。
+CLOUD_IMG_MAX_SIDE: int = int(os.getenv("CLOUD_IMG_MAX_SIDE", "1024"))
 
 # ── 运行参数 ─────────────────────────────────────────
 MAX_STEPS: int = int(os.getenv("MAX_STEPS", "12"))            # 单任务最大步数
