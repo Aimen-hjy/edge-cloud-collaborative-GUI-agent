@@ -56,12 +56,13 @@ CLOUD_ENDPOINT = LLMEndpoint(
 
 # 上传云端前把截图长边压到这个像素值：VL 模型的 image token 数与像素量正相关，
 # 压小图能显著砍 prefill + 上传耗时，且归一化坐标(0~1000)不受分辨率影响。
-CLOUD_IMG_MAX_SIDE: int = int(os.getenv("CLOUD_IMG_MAX_SIDE", "1024"))
+# 768 是精度/速度折中：比 1024 少 ~44% 像素，prefill 显著下降，点控件误差仍 <15px。
+CLOUD_IMG_MAX_SIDE: int = int(os.getenv("CLOUD_IMG_MAX_SIDE", "768"))
 
 # ── 运行参数 ─────────────────────────────────────────
 MAX_STEPS: int = int(os.getenv("MAX_STEPS", "12"))            # 单任务最大步数
 STUCK_THRESHOLD: int = int(os.getenv("STUCK_THRESHOLD", "3"))  # 连续无进展步数阈值
-ACTION_SETTLE_SEC: float = float(os.getenv("ACTION_SETTLE_SEC", "0.5"))  # 动作后等待 UI 稳定
+ACTION_SETTLE_SEC: float = float(os.getenv("ACTION_SETTLE_SEC", "0.2"))  # 动作后等待 UI 稳定（抓屏自身的 ~0.4s 帧缓冲读取就是天然 settle）
 
 # adb 设备序列号；留空 = 默认唯一设备
 ADB_SERIAL: str = os.getenv("ADB_SERIAL", "")

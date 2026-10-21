@@ -92,7 +92,7 @@ def run_task(task: str, client: Optional[LLMClient] = None,
             CLOUD_ENDPOINT,
             [text_msg("system", PLANNER_SYSTEM),
              image_msg("user", user, screen.resize_img(shot, CLOUD_IMG_MAX_SIDE))],
-            temperature=0.0, max_tokens=512,
+            temperature=0.0, max_tokens=256,
         )
         t_plan = time.time()
         plan = extract_json(plan_msg.content)

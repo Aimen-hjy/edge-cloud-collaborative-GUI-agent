@@ -152,11 +152,16 @@ def launch(package: str) -> None:
     """拉起 App 的 launcher 入口。
 
     先 `cmd package resolve-activity --brief` 解析主 Activity，再 `am start -n`
-    直接拉起，比 monkey（~1.5s）快约 4 倍（~0.4s），且不依赖硬编码 Activity 名。
+    直接拉起，比 monkey（~1.5s）快约 3 倍（~0.4s），且不依赖硬编码 Activity 名。
+
+    注意：不能写成 `sh -c 'act=$(...) ; am start -n "$act"'`——adb 把整段交给
+    设备外层 shell 时，`$(...)`/`$act` 会被外层先展开成空，导致 Bad component name。
+    这里拆成两次独立 adb 调用，不经过 shell 变量，最稳。
     """
-    run_text("shell", "sh", "-c",
-             f'act=$(cmd package resolve-activity --brief {package} | tail -1); '
-             f'[ -n "$act" ] && am start -n "$act"')
+    out = run_text("shell", "cmd", "package", "resolve-activity", "--brief", package)
+    act = next((ln.strip() for ln in out.splitlines() if "/" in ln), "")
+    if act:
+        run_text("shell", "am", "start", "-n", act)
 
 
 def screen_size() -> tuple[int, int]:
