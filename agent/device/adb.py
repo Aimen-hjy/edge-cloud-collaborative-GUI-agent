@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 from ..config import ADB_SERIAL
@@ -48,8 +49,49 @@ def run_bytes(*args: str, timeout: int = 30) -> bytes:
 
 # ── 观察 ─────────────────────────────────────────────
 def screencap() -> bytes:
-    """当前屏幕截图，PNG 字节。"""
+    """当前屏幕截图，PNG 字节（全分辨率，含设备端 ~0.5s PNG 编码）。"""
     return run_bytes("exec-out", "screencap", "-p")
+
+
+# 设备端低分辨率抓屏工具（server/screencap_fast.cpp 的编译产物）。
+# 只读帧缓冲 → 内存里 area-average 下采样到长边 max_side → 编码小 PNG，
+# 省掉设备端全分辨率 libpng 编码的 ~0.5s。
+_SCREENCAP_FAST_LOCAL = Path(__file__).resolve().parent.parent.parent / "server" / "screencap_fast"
+_SCREENCAP_FAST_REMOTE = "/data/local/tmp/screencap_fast"
+_screencap_fast_ready: Optional[bool] = None  # None=未探测, True=可用, False=不可用
+_screen_dims: Optional[tuple[int, int]] = None  # 屏幕分辨率缓存（旋转罕见，缓存省每次 wm size 往返）
+
+
+def _push_screencap_fast() -> bool:
+    """把 screencap_fast 推送到设备并 chmod，返回是否就位。"""
+    if not _SCREENCAP_FAST_LOCAL.exists():
+        return False
+    run_text("push", str(_SCREENCAP_FAST_LOCAL), _SCREENCAP_FAST_REMOTE)
+    run_text("shell", "chmod", "755", _SCREENCAP_FAST_REMOTE)
+    return "screencap_fast" in run_text("shell", "ls", "-l", _SCREENCAP_FAST_REMOTE)
+
+
+def screencap_fast(max_side: int = 1024) -> bytes:
+    """低分辨率抓屏（长边 max_side），失败自动回退 screencap()。
+
+    首次调用时探测并推送原生工具；工具不可用或输出非法图片时回退到全分辨率
+    screencap()，保证调用方永远拿到一张可用截图。输出是 JPEG（比 PNG 小 ~9x）。
+    """
+    global _screencap_fast_ready, _screen_dims
+    if _screencap_fast_ready is None:
+        _screencap_fast_ready = _push_screencap_fast()
+    if not _screencap_fast_ready:
+        return screencap()
+    if _screen_dims is None:
+        _screen_dims = screen_size()
+    w, h = _screen_dims
+    out = run_bytes(
+        "exec-out", "sh", "-c",
+        f"screencap | {_SCREENCAP_FAST_REMOTE} {w} {h} {max_side}",
+    )
+    if out.startswith(b"\x89PNG") or out.startswith(b"\xff\xd8\xff"):
+        return out
+    return screencap()
 
 
 def dump_ui() -> str:
@@ -107,9 +149,14 @@ def home() -> None:
 
 
 def launch(package: str) -> None:
-    """拉起 App 的 launcher 入口（monkey 方式，无需知道具体 Activity）。"""
-    run_text("shell", "monkey", "-p", package,
-             "-c", "android.intent.category.LAUNCHER", "1")
+    """拉起 App 的 launcher 入口。
+
+    先 `cmd package resolve-activity --brief` 解析主 Activity，再 `am start -n`
+    直接拉起，比 monkey（~1.5s）快约 4 倍（~0.4s），且不依赖硬编码 Activity 名。
+    """
+    run_text("shell", "sh", "-c",
+             f'act=$(cmd package resolve-activity --brief {package} | tail -1); '
+             f'[ -n "$act" ] && am start -n "$act"')
 
 
 def screen_size() -> tuple[int, int]:

@@ -105,21 +105,24 @@ def img_signature(png_bytes: bytes, grid: int = 8) -> tuple[int, ...]:
     return tuple(img.getdata())
 
 
-def resize_png(png_bytes: bytes, max_side: int = 1024) -> bytes:
-    """把 PNG 长边压到 max_side 像素，返回新的 PNG 字节。
+def resize_img(img_bytes: bytes, max_side: int = 1024) -> bytes:
+    """把截图长边压到 max_side 像素，返回 JPEG 字节。
 
     云端 VL 模型按像素切 image token，原图（1600×2400）token 量是压缩后
     的 4~6 倍，直接拖慢 prefill 和上传。坐标用 0~1000 归一化，与分辨率无关，
-    所以缩图基本不损接地精度。长边不超过 max_side 时原样返回。
+    所以缩图基本不损接地精度。长边不超过 max_side 时原样返回（保留原格式）。
+
+    统一输出 JPEG：截图像素是照片/图标混合，PNG 几乎压不动，JPEG 体积小 ~9x，
+    上传云端更快。
     """
-    img = Image.open(io.BytesIO(png_bytes))
+    img = Image.open(io.BytesIO(img_bytes))
     w, h = img.size
     if max(w, h) <= max_side:
-        return png_bytes
+        return img_bytes
     scale = max_side / max(w, h)
     img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
 
 

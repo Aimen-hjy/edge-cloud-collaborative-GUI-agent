@@ -13,13 +13,13 @@ from typing import Optional
 from .config import ACTION_SETTLE_SEC, CLOUD_ENDPOINT, CLOUD_IMG_MAX_SIDE, MAX_STEPS
 from .device import adb, screen, system_query
 from .device.screen import UIElement
-from .llm.client import LLMClient, extract_json, image_b64, image_msg, text_msg
+from .llm.client import LLMClient, extract_json, image_msg, text_msg
 from .llm.prompts import PLANNER_SYSTEM, PLANNER_USER_TEMPLATE
 from .memory.context import History
 from .perception.ground import ground, ground_visual
 from .router import Router
 from .tools.actions import ActionExecutor
-from .tools.system_ops import route_with_model
+from .tools.system_ops import launch_leading_app, route_with_model, try_local_intent
 
 
 def run_task(task: str, client: Optional[LLMClient] = None,
@@ -43,16 +43,27 @@ def run_task(task: str, client: Optional[LLMClient] = None,
     if ans is not None:
         return {"success": True, "reason": ans, "steps": 0}
 
+    # ── 层1.5：关键词系统操作 + 打开App 本地短路（确定性，<0.2s）──
+    # 覆盖「关闭蓝牙」「调亮屏幕」「打开相机」等高频任务，比 0.6B 模型路由更稳更快。
+    ans = try_local_intent(task)
+    if ans is not None:
+        return {"success": True, "reason": ans, "steps": 0}
+
+    # ── 层1.6：复合任务拆解「打开X，做Y」→ 本地拉起 X，剩余 Y 交给云端 ──
+    remaining = launch_leading_app(task)
+    if remaining is not None:
+        task = remaining
+
     # 注意：这里不再 reset_kv。路由请求走 prefix_cache（agent_server 端把恒定的
     # system 前缀 KV 保留复用），reset 会把这份前缀缓存也清掉，反而拖慢每轮路由。
 
-    # ── 层2：本地模型系统路由（处理「关闭 WiFi」等变化说法）──
+    # ── 层2：本地模型系统路由（处理关键词表接不住的变化说法）──
     ans = route_with_model(task, client)
     if ans is not None:
         return {"success": True, "reason": ans, "steps": 0}
 
     # 首次抓屏，顺便探测设备是否就绪
-    shot = adb.screencap()
+    shot = adb.screencap_fast()
     if not shot:
         return _result(False, "截图失败：请确认设备已连接（adb devices）", 0)
     prev_shot: Optional[bytes] = None  # 上一步云端规划所用的截图
@@ -64,7 +75,7 @@ def run_task(task: str, client: Optional[LLMClient] = None,
         # 若始终不变，靠 should_abort 连续「无进展」计数提前止损。
         if prev_shot is not None and not screen.img_changed(prev_shot, shot):
             time.sleep(ACTION_SETTLE_SEC)
-            shot = adb.screencap()
+            shot = adb.screencap_fast()
             history.add("wait", "", False)
             if verbose:
                 print(f"[step {step:02d}] wait（屏幕无变化，跳过云端）")
@@ -80,7 +91,7 @@ def run_task(task: str, client: Optional[LLMClient] = None,
         plan_msg = client.chat(
             CLOUD_ENDPOINT,
             [text_msg("system", PLANNER_SYSTEM),
-             image_msg("user", user, image_b64(screen.resize_png(shot, CLOUD_IMG_MAX_SIDE)))],
+             image_msg("user", user, screen.resize_img(shot, CLOUD_IMG_MAX_SIDE))],
             temperature=0.0, max_tokens=512,
         )
         t_plan = time.time()
@@ -111,10 +122,10 @@ def run_task(task: str, client: Optional[LLMClient] = None,
         if xml_before is not None:
             # 回退路径：有 UI 树，用树指纹比对
             changed = screen.signature(adb.dump_ui()) != screen.signature(xml_before)
-            shot = adb.screencap()  # 下一步截图
+            shot = adb.screencap_fast()  # 下一步截图
         else:
             # 快路径：无 UI 树，抓下一步截图顺带用截图指纹判断页面是否变化
-            new_shot = adb.screencap()
+            new_shot = adb.screencap_fast()
             changed = screen.img_changed(shot, new_shot)
             shot = new_shot
         t_verify = time.time()

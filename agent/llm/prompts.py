@@ -74,8 +74,15 @@ SYSTEM_ROUTER_SYSTEM = """你是 Android 设备的系统操作路由器。给你
 
 例子：
 - 任务「现在几点了」 → {{"capability": "query_time", "params": {{}}}}
+- 任务「电量还剩多少」 → {{"capability": "query_battery", "params": {{}}}}
 - 任务「关闭 WiFi」 → {{"capability": "set_wifi", "params": {{"on": false}}}}
+- 任务「打开 WiFi」 → {{"capability": "set_wifi", "params": {{"on": true}}}}
+- 任务「关闭蓝牙」 → {{"capability": "set_bluetooth", "params": {{"on": false}}}}
+- 任务「打开蓝牙」 → {{"capability": "set_bluetooth", "params": {{"on": true}}}}
 - 任务「调亮屏幕」 → {{"capability": "set_brightness", "params": {{"level": 220}}}}
+- 任务「调暗屏幕」 → {{"capability": "set_brightness", "params": {{"level": 60}}}}
+- 任务「静音」 → {{"capability": "set_volume", "params": {{"level": 0}}}}
+- 任务「打开飞行模式」 → {{"capability": "set_airplane", "params": {{"on": true}}}}
 - 任务「打开浏览器」 → {{"escalate": true}}
 - 任务「点击设置里的WiFi」 → {{"escalate": true}}
 

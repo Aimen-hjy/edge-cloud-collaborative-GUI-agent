@@ -65,22 +65,29 @@ def text_msg(role: str, content: str) -> dict:
     return {"role": role, "content": content}
 
 
-def image_msg(role: str, text: str, image_b64: str) -> dict:
-    """文本 + 一张图（base64 PNG）的消息，OpenAI 视觉格式。"""
+def _image_mime(data: bytes) -> str:
+    """按魔数识别图片类型，供 data URL 使用。"""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return "image/png"
+
+
+def image_msg(role: str, text: str, image_bytes: bytes) -> dict:
+    """文本 + 一张图（PNG/JPEG 字节）的消息，OpenAI 视觉格式。"""
     return {
         "role": role,
         "content": [
             {"type": "text", "text": text},
             {"type": "image_url", "image_url": {
-                "url": f"data:image/png;base64,{image_b64}",
+                "url": f"data:{_image_mime(image_bytes)};base64,{image_b64(image_bytes)}",
             }},
         ],
     }
 
 
-def image_b64(png_bytes: bytes) -> str:
-    """PNG 字节 → base64 字符串。"""
-    return base64.b64encode(png_bytes).decode()
+def image_b64(img_bytes: bytes) -> str:
+    """图片字节 → base64 字符串。"""
+    return base64.b64encode(img_bytes).decode()
 
 
 # ── 输出解析 ─────────────────────────────────────────

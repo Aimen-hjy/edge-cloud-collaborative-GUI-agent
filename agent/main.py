@@ -13,6 +13,11 @@ from .loop import run_task
 
 
 def main() -> None:
+    # Windows 下 stdout 默认 GBK，打印中文/emoji 会 UnicodeEncodeError；
+    # 显式切到 UTF-8，避免任务跑完后在收尾打印处崩溃。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     ap = argparse.ArgumentParser(description="端云协同 GUI Agent")
     ap.add_argument("task", nargs="+", help="要执行的自然语言任务")
     args = ap.parse_args()

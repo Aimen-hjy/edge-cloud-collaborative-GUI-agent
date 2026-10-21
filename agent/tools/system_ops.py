@@ -138,6 +138,125 @@ def dispatch(name: Optional[str], params: Optional[dict]) -> Optional[str]:
         return None
 
 
+# ── 关键词快速路由（确定性，<0.2s）────────────────────
+# 0.6B 对这些变化说法不稳定（「关闭蓝牙」「调亮屏幕」常错输出 escalate），
+# 关键词表兜底既快又准；表中没有的才交给下面的模型语义路由。
+
+# (触发词, 能力名, 参数)。触发词本身即「修改意图」，无需再判 _ACTION_VERBS。
+_KEYWORD_OPS: list[tuple[tuple[str, ...], str, dict]] = [
+    (("关闭wifi", "关wifi", "wifi关", "wifi关闭"), "set_wifi", {"on": False}),
+    (("打开wifi", "开wifi", "wifi开", "wifi开启"), "set_wifi", {"on": True}),
+    (("关闭蓝牙", "关蓝牙", "蓝牙关", "蓝牙关闭"), "set_bluetooth", {"on": False}),
+    (("打开蓝牙", "开蓝牙", "蓝牙开", "蓝牙开启"), "set_bluetooth", {"on": True}),
+    (("关闭飞行模式", "关飞行模式", "飞行模式关"), "set_airplane", {"on": False}),
+    (("打开飞行模式", "开飞行模式", "飞行模式开"), "set_airplane", {"on": True}),
+    (("静音", "关声音", "关闭声音", "消音"), "set_volume", {"level": 0}),
+    (("亮度最高", "最亮", "调到最亮", "亮度最大"), "set_brightness", {"level": 255}),
+    (("亮度最低", "最暗", "调到最暗", "亮度最小"), "set_brightness", {"level": 10}),
+    (("调亮", "变亮", "提高亮度", "增加亮度", "亮度调高"), "set_brightness", {"level": 220}),
+    (("调暗", "变暗", "降低亮度", "减少亮度", "亮度调低"), "set_brightness", {"level": 60}),
+    (("音量调大", "调大音量", "音量加大", "声音调大", "加大音量"), "set_volume", {"level": 10}),
+    (("音量调小", "调小音量", "音量减小", "声音调小", "减小音量"), "set_volume", {"level": 3}),
+]
+
+# 中文应用名 → 包名。「打开X」这类任务 monkey 拉起 <1s，不必烧云端规划。
+# 名字去后缀后精确匹配；表外名字不猜，交给云端（避免拉错应用）。
+APP_PACKAGES = {
+    "设置": "com.android.settings",
+    "相机": "com.android.camera2",
+    "浏览器": "com.zui.browser",
+    "微信": "com.tencent.mm",
+    "音乐": "com.android.music",
+    "日历": "com.android.calendar",
+    "时钟": "com.android.deskclock",
+    "闹钟": "com.android.deskclock",
+    "相册": "com.android.gallery3d",
+    "图库": "com.android.gallery3d",
+    "联系人": "com.android.contacts",
+    "通讯录": "com.android.contacts",
+    "电话": "com.android.dialer",
+    "拨号": "com.android.dialer",
+    "计算器": "com.android.calculator2",
+    "文件管理": "com.zui.filemanager",
+    "文件管理器": "com.zui.filemanager",
+    "爱奇艺": "com.qiyi.video.pad",
+    "咪咕视频": "com.cmcc.cmvideo",
+    "wps": "cn.wps.moffice_eng",
+}
+
+_OPEN_RE = re.compile(r"^(打开|启动|进入|开启)\s*(.+)$")
+
+
+_LEADING_OPEN_RE = re.compile(r"^(打开|启动|进入|开启)\s*(.+?)\s*[,，。；;、]\s*(.+)$")
+
+
+def launch_leading_app(task: str) -> Optional[str]:
+    """任务以「打开X，做Y」开头且 X 是已知应用 → 本地拉起 X，返回剩余子任务 Y；否则 None。
+
+    「打开设置，进入WiFi」这类复合任务，云端常纠结于猜包名（launch）还是回桌面（home），
+    都不稳。这里把「打开X」这一步拆出来本地确定地做，剩余「进入WiFi」交给云端看图点，
+    可靠性高得多。纯「打开X」由 try_local_intent 处理，不会走到这里。
+    """
+    m = _LEADING_OPEN_RE.match(task.strip())
+    if not m:
+        return None
+    name = m.group(2).strip()
+    pkg = APP_PACKAGES.get(name)
+    if not pkg:
+        return None
+    adb.launch(pkg)
+    return m.group(3).strip()
+
+
+def try_launch_app(task: str) -> Optional[str]:
+    """「打开X」→ monkey 拉起 X 的 launcher 入口；成功返回人话，非打开意图/表外返回 None。"""
+    m = _OPEN_RE.match(task.strip())
+    if not m:
+        return None
+    name = m.group(2).strip()
+    for suffix in ("应用", "app", "App"):
+        if name.lower().endswith(suffix):
+            name = name[:-len(suffix)].strip()
+    pkg = APP_PACKAGES.get(name)
+    if not pkg:
+        return None
+    adb.launch(pkg)
+    return f"已打开{name}"
+
+
+def try_local_intent(task: str) -> Optional[str]:
+    """关键词系统操作 + 确定性导航 + 打开App 的本地短路（确定性，<0.2s）。
+
+    顺序：系统开关（蓝牙/飞行模式/亮度/音量/WiFi）→ 导航（回桌面/返回）→ 「打开X」。
+    表中没有的返回 None，交给模型语义路由 / 云端。
+    """
+    if not task:
+        return None
+    low = task.lower()
+    for keywords, cap, params in _KEYWORD_OPS:
+        if any(k in low for k in keywords):
+            return dispatch(cap, params)
+    nav = _try_nav(task)
+    if nav is not None:
+        return nav
+    return try_launch_app(task)
+
+
+_HOME_WORDS = ("回到桌面", "回桌面", "回主屏幕", "返回桌面", "回主页", "返回主屏幕", "到桌面", "回首页")
+_BACK_WORDS = ("返回上一页", "返回上一步", "回上一页", "回上一步", "后退")
+
+
+def _try_nav(task: str) -> Optional[str]:
+    """确定性导航：回桌面 / 返回上一页。不依赖屏幕状态，本地 <0.2s 直接做。"""
+    if any(w in task for w in _HOME_WORDS):
+        adb.home()
+        return "已回到桌面"
+    if any(w in task for w in _BACK_WORDS):
+        adb.back()
+        return "已返回上一页"
+    return None
+
+
 def route_with_model(task: str, client: LLMClient) -> Optional[str]:
     """本地模型路由：任务能用系统命令完成 → 执行并返回结果；需看屏幕/失败 → None（升级云端）。"""
     if not task:
@@ -150,7 +269,7 @@ def route_with_model(task: str, client: LLMClient) -> Optional[str]:
     msg = client.chat(
         LOCAL_ENDPOINT,
         [text_msg("system", system), text_msg("user", user)],
-        temperature=0.0, max_tokens=128, prefix_cache=True,
+        temperature=0.0, max_tokens=64, prefix_cache=True,
     )
     data = extract_json(msg.content)
     if not isinstance(data, dict) or data.get("escalate"):

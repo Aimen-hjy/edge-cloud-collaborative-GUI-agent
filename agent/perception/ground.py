@@ -10,7 +10,7 @@ from typing import Optional
 
 from ..config import LOCAL_ENDPOINT
 from ..device.screen import UIElement, to_prompt
-from ..llm.client import LLMClient, extract_json, image_b64, image_msg, text_msg
+from ..llm.client import LLMClient, extract_json, image_msg, text_msg
 from ..llm.prompts import (
     GROUNDER_SYSTEM,
     GROUNDER_USER_TEMPLATE,
@@ -70,7 +70,7 @@ def ground_visual(
     messages = [
         text_msg("system", GROUNDER_VL_SYSTEM),
         image_msg("user", GROUNDER_VL_USER_TEMPLATE.format(target=target),
-                  image_b64(shot_bytes)),
+                  shot_bytes),
     ]
     msg = client.chat(endpoint, messages, temperature=0.3, max_tokens=64)
     m = _BOX_RE.search(msg.content or "")

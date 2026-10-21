@@ -1,1 +1,4 @@
 /qwen3.8-apikey
+__pycache__/
+*.pyc
+/server/screencap_fast
