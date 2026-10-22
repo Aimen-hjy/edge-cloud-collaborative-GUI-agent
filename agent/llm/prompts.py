@@ -34,6 +34,10 @@ PLANNER_USER_TEMPLATE = """任务：{task}
 - 无法完成：  {{"action": "fail",   "reason": "<原因>"}}"""
 
 
+# ── 闲聊/问答兜底（云端纯文本，不走 GUI 循环）──────────
+CHAT_SYSTEM = "你是一个 Android 设备上的智能助手。用简洁、友好、口语化的中文回答用户，直接给答案，不要客套铺垫。"
+
+
 # ── 端侧 grounding（纯文本，UI 树）────────────────────
 GROUNDER_SYSTEM = """你是 GUI 坐标定位器。给你一个目标描述和当前屏幕的控件列表
 （每行格式：编号、控件文本、中心坐标、是否可点击），找出与目标最匹配的**可点击**控件。
@@ -48,7 +52,7 @@ GROUNDER_USER_TEMPLATE = """目标：{target}
 {elements}"""
 
 
-# ── 端侧视觉 grounding（Qwen3-VL-2B，看图）────────────
+# ── 端侧视觉 grounding（历史：需 Qwen3-VL 视觉模型，当前 0.6B 纯文本已停用）────
 # Qwen3-VL 原生 grounding 格式是 <box_start>(x1,y1),(x2,y2)<box_end>，
 # 坐标是 0~1000 归一化值。JSON 坐标格式这模型不会输出，必须用原生 box 格式。
 GROUNDER_VL_SYSTEM = """你是 GUI 视觉定位器。给你一张手机屏幕截图和一个目标描述，
@@ -60,7 +64,7 @@ GROUNDER_VL_USER_TEMPLATE = """在图片中定位「{target}」，输出它的�
 
 
 # ── 端侧系统操作路由（纯文本，把任务映射到能力表）────
-# 端侧 2B 只负责「选能力 + 填参数」，命令硬编码在 system_ops.py，
+# 端侧 0.6B 只负责「选能力 + 填参数」，命令硬编码在 system_ops.py，
 # 模型无法幻觉执行任意命令；判断需要看屏幕时输出 escalate 升级云端。
 SYSTEM_ROUTER_SYSTEM = """你是 Android 设备的系统操作路由器。给你一个用户任务和一份可用能力列表，
 判断这个任务能否用系统命令直接完成（无需查看屏幕）。

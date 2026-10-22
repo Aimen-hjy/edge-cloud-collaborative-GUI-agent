@@ -25,18 +25,57 @@ def reset_home() -> None:
     time.sleep(0.6)
 
 
-# 内置任务集：覆盖 层1(查询) / 层1.5(本地关键词+打开App) / 层2(模型路由) / 层3-4(云端 GUI)。
-# 本地类应当 <0.5s；「打开设置，进入WiFi」是复合任务，本地拉起设置后云端只做 1 步。
+# 内置任务集：覆盖 层1(查询) / 层1.5(本地关键词+打开App+设置子页) / 层2(模型路由) / 层3-4(云端 GUI)。
+# 本地类应当 <0.5s；「打开设置，进入X」是复合任务，本地拉起设置后云端只做 1 步。
 DEFAULT_TASKS = [
-    "现在几点了",           # 层1 查询
-    "电量还有多少",         # 层1 查询
-    "关闭WiFi",            # 层1.5 关键词
-    "把屏幕调亮一点",       # 层1.5 关键词
-    "关闭蓝牙",            # 层1.5 关键词
-    "打开设置",            # 层1.5 打开App
-    "打开相机",            # 层1.5 打开App
-    "回到桌面",            # 层1.5 导航
-    "打开设置，进入WiFi",   # 层1.6 复合任务拆解 + 云端 1 步
+    # ── 层1 查询（shell/dumpsys，<0.2s）──
+    "现在几点了",           # query_time
+    "电量还有多少",         # query_battery
+    "存储还有多少",         # query_storage
+    "内存还剩多少",         # query_memory
+
+    # ── 层1.5 关键词系统开关（<0.4s）──
+    "关闭WiFi",            # set_wifi off
+    "打开WiFi",            # set_wifi on
+    "关闭蓝牙",            # set_bluetooth off
+    "打开蓝牙",            # set_bluetooth on
+    "把屏幕调亮一点",       # set_brightness
+    "把屏幕调暗一点",       # set_brightness
+    "音量调大",            # set_volume
+    "静音",                # set_volume 0
+
+    # ── 层1.5 设置子页 intent（<0.5s，本版新增）──
+    "进入WiFi设置",         # WIFI_SETTINGS
+    "进入蓝牙设置",         # BLUETOOTH_SETTINGS
+    "打开显示设置",         # DISPLAY_SETTINGS
+    "打开声音设置",         # SOUND_SETTINGS
+    "进入存储设置",         # INTERNAL_STORAGE_SETTINGS
+
+    # ── 层1.5 打开App（<0.6s）──
+    "打开设置",            # com.android.settings
+    "打开相机",            # com.android.camera2
+    "打开日历",            # com.android.calendar
+    "打开计算器",          # com.android.calculator2
+    "打开浏览器",          # com.zui.browser
+
+    # ── 层1.5 导航 ──
+    "回到桌面",            # home
+    "返回上一页",          # back
+
+    # ── 层1.6 复合任务拆解 ──
+    "打开设置，进入WiFi",   # launch settings + WIFI_SETTINGS
+    "打开设置，进入蓝牙",   # launch settings + BLUETOOTH_SETTINGS
+
+    # ── 层3/4 云端 GUI（可能上云：本地拉起后，剩余需看屏点控件/输入）──
+    "打开浏览器，搜索AI",     # 本地拉起浏览器 + 云端点搜索框输入
+    "打开相机，拍张照片",     # 本地拉起相机 + 云端点快门
+    "打开设置，打开显示",     # 本地拉起设置 + 云端点「显示」
+
+    # ── 日常对话/闲聊型（无本地 GUI 能力，测试越界鲁棒性）──
+    "今天天气怎么样",        # 无 GUI 动作，预期 fail 或明确回「无法完成」
+    "你好，你是谁",          # 身份类闲聊
+    "讲个笑话",             # 闲聊
+    "今天星期几",            # 日期类（date 可答，当前查询表未覆盖，看是否漏到云端）
 ]
 
 

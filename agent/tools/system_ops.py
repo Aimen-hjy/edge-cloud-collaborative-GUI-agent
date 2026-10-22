@@ -1,4 +1,4 @@
-"""端侧系统操作：本地 2B 模型把自然语言任务路由到安全的 adb 系统命令。
+"""端侧系统操作：本地 0.6B 模型把自然语言任务路由到安全的 adb 系统命令。
 
 与 device/system_query.py（关键词快路径）的差别：这里用模型做语义路由，
 能处理「关闭 WiFi」「调亮一点」「静音」这类关键词表接不住的变化说法。
@@ -13,10 +13,10 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..config import LOCAL_ENDPOINT
+from ..config import CLOUD_ENDPOINT, LOCAL_ENDPOINT
 from ..device import adb
 from ..llm.client import LLMClient, extract_json, text_msg
-from ..llm.prompts import SYSTEM_ROUTER_SYSTEM, SYSTEM_ROUTER_USER
+from ..llm.prompts import CHAT_SYSTEM, SYSTEM_ROUTER_SYSTEM, SYSTEM_ROUTER_USER
 
 
 @dataclass
@@ -125,6 +125,27 @@ _GUI_CUES = (
 
 def looks_like_gui(task: str) -> bool:
     return any(c in task for c in _GUI_CUES)
+
+
+# 明显的「问答/闲聊」线索：这些不是 GUI 动作，本地又没有对应能力，直接明确失败，
+# 别让云端为了一个笑话/天气在屏幕上瞎点 12 步（约 22s）。
+_CHAT_CUES = ("天气", "笑话", "故事", "新闻", "聊天", "你是谁", "自我介绍",
+              "讲个", "说个", "怎么样", "为什么", "什么意思")
+
+
+def looks_like_chat(task: str) -> bool:
+    t = task.strip()
+    return t.endswith(("？", "?")) or any(c in t for c in _CHAT_CUES)
+
+
+def chat_answer(task: str, client: LLMClient) -> Optional[str]:
+    """闲聊/问答兜底：用云端模型直接生成文字回答，返回答案文本；失败返回 None。"""
+    msg = client.chat(
+        CLOUD_ENDPOINT,
+        [text_msg("system", CHAT_SYSTEM), text_msg("user", task)],
+        temperature=0.7, max_tokens=256,
+    )
+    return (msg.content or "").strip() or None
 
 
 def dispatch(name: Optional[str], params: Optional[dict]) -> Optional[str]:
@@ -300,6 +321,12 @@ def _try_settings_page(task: str) -> Optional[str]:
             m = re.match(r"^(?:打开|启动|开启)\s*(.+)$", t)  # 打开蓝牙设置
             if m and re.search(r"(?:设置|页面|页)$", m.group(1).strip()):
                 core = re.sub(r"(?:设置|页面|页)$", "", m.group(1).strip()).strip()
+    # 「打开显示」「打开存储」「打开关于本机」：不带「设置/页」后缀、但也不是开关类
+    # （开关类 wifi/蓝牙/飞行模式 由 _KEYWORD_OPS 兜底），按进设置页处理。
+    if not core:
+        m = re.match(r"^(?:打开|启动|开启)\s*(显示|存储|关于本机)\s*$", t)
+        if m:
+            core = m.group(1).strip()
     if not core:
         return None
     low = core.lower()

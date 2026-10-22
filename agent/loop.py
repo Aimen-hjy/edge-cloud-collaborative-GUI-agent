@@ -1,7 +1,7 @@
 """主循环：observe → plan(云) → ground(端) → act → verify。
 
 端云分工：
-  云端 qwen3-vl-max  看截图决策「做什么 + 目标描述」
+  云端 qwen3-omni-flash  看截图决策「做什么 + 目标描述」
   端侧 qwen3-0.6b    把目标描述定位到控件坐标
   adb                执行动作
 """
@@ -19,7 +19,8 @@ from .memory.context import History
 from .perception.ground import ground, ground_visual
 from .router import Router
 from .tools.actions import ActionExecutor
-from .tools.system_ops import launch_leading_app, route_with_model, try_local_intent
+from .tools.system_ops import (chat_answer, launch_leading_app, looks_like_chat,
+                                route_with_model, try_local_intent)
 
 
 def run_task(task: str, client: Optional[LLMClient] = None,
@@ -62,8 +63,22 @@ def run_task(task: str, client: Optional[LLMClient] = None,
     # 注意：这里不再 reset_kv。路由请求走 prefix_cache（agent_server 端把恒定的
     # system 前缀 KV 保留复用），reset 会把这份前缀缓存也清掉，反而拖慢每轮路由。
 
+    # ── 问答/闲聊：云端直接回答文字，不走 GUI 循环 ──
+    if looks_like_chat(task):
+        try:
+            ans = chat_answer(task, client)
+        except Exception:
+            ans = None
+        if ans is not None:
+            return {"success": True, "reason": ans, "steps": 0}
+        return _result(False, "无法回答", 0)
+
     # ── 层2：本地模型系统路由（处理关键词表接不住的变化说法）──
-    ans = route_with_model(task, client)
+    try:
+        ans = route_with_model(task, client)
+    except Exception as e:
+        # 本地模型不可达（设备断开/服务挂掉）时降级为失败，不崩整个进程。
+        return _result(False, f"本地模型不可用: {e}", 0)
     if ans is not None:
         return {"success": True, "reason": ans, "steps": 0}
 
@@ -93,12 +108,15 @@ def run_task(task: str, client: Optional[LLMClient] = None,
         # ── 层2：云端规划（看图 + 任务 + 历史 → 下一步动作）──
         user = PLANNER_USER_TEMPLATE.format(
             task=task, history=history.to_text() or "（无）")
-        plan_msg = client.chat(
-            CLOUD_ENDPOINT,
-            [text_msg("system", PLANNER_SYSTEM),
-             image_msg("user", user, screen.resize_img(shot, CLOUD_IMG_MAX_SIDE))],
-            temperature=0.0, max_tokens=256,
-        )
+        try:
+            plan_msg = client.chat(
+                CLOUD_ENDPOINT,
+                [text_msg("system", PLANNER_SYSTEM),
+                 image_msg("user", user, screen.resize_img(shot, CLOUD_IMG_MAX_SIDE))],
+                temperature=0.0, max_tokens=256,
+            )
+        except Exception as e:
+            return _result(False, f"云端模型调用失败: {e}", step)
         t_plan = time.time()
         plan = extract_json(plan_msg.content)
         if not isinstance(plan, dict):

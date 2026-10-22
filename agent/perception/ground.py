@@ -61,7 +61,7 @@ def ground_visual(
 ):
     """视觉 grounding：截图 + 目标描述 → 屏幕坐标。
 
-    端侧 Qwen3-VL-2B 走原生 box 格式 <box_start>(x1,y1),(x2,y2)<box_end>，
+    端侧 Qwen3-VL 视觉模型走原生 box 格式 <box_start>(x1,y1),(x2,y2)<box_end>，
     坐标是 0~1000 归一化值。返回边界框中心的 (x, y) 像素坐标；找不到返回 None。
     """
     if not shot_bytes or not target:
