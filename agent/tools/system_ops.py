@@ -257,6 +257,14 @@ def try_local_intent(task: str) -> Optional[str]:
     page = _try_settings_page(task)
     if page is not None:
         return page
+    # 「调到/调成 N%」显式百分比：亮度 / 音量。关键词表只收语义词（调亮/最暗），
+    # 具体百分比走这条正则确定性直达，省得漏到云端被误判成「查询亮度」。
+    m = re.search(r"(亮度|音量).{0,4}(?:调到|调成|调为|调至)\s*(\d{1,3})\s*%", task)
+    if m:
+        kind, pct = m.group(1), int(m.group(2))
+        if kind == "亮度":
+            return dispatch("set_brightness", {"level": round(pct / 100 * 255)})
+        return dispatch("set_volume", {"level": round(pct / 100 * 15)})
     low = task.lower()
     for keywords, cap, params in _KEYWORD_OPS:
         if any(k in low for k in keywords):

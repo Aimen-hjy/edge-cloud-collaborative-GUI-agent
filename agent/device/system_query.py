@@ -67,7 +67,8 @@ _QUERIES: list[tuple[tuple[str, ...], list[str], Callable[[str], str]]] = [
 ]
 
 # 出现这些「去操作」动词时，是导航/修改意图而非查询意图，交给云端判断，避免误判。
-_ACTION_VERBS = ("打开", "启动", "进入", "点击", "设置", "关闭", "开启", "切换", "修改", "调整")
+_ACTION_VERBS = ("打开", "启动", "进入", "点击", "设置", "关闭", "开启", "切换", "修改", "调整",
+                 "调到", "调成", "调为", "调至")
 
 
 def try_answer(text: str) -> Optional[str]:
