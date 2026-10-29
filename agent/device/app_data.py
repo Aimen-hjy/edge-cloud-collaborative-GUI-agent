@@ -445,3 +445,282 @@ def try_calendar_op(text: str) -> Optional[str]:
     if reminders:
         msg += f"，提前 {reminders[0]} 分钟提醒"
     return msg
+
+
+# ── 联系人（com.android.providers.contacts，contacts2.db）──────────────────
+# 数据模型：raw_contacts(account_id, contact_id, display_name) ↔ contacts(_id,
+# name_raw_contact_id) ↔ data(raw_contact_id, mimetype_id, data1..data15)。
+# mimetype_id：name=7, email_v2=1, organization=4, phone_v2=5, group_membership=11,
+# contact_event=13, website=14。电话 data2 类型 2=手机 3=工作；邮箱 data2 2=工作；
+# 事件 data2 3=生日（data1 存 yyyy-MM-dd）。
+CONTACTS_DB = "/data/data/com.android.providers.contacts/databases/contacts2.db"
+_EVENT_BDAY = 3
+_account_id: Optional[int] = None
+
+
+def _ins_last_id(db: str, sql: str) -> int:
+    """执行 INSERT 并在同一 sqlite3 连接里 SELECT last_insert_rowid() 返回新 id。"""
+    out = _sql(db, sql + "; SELECT last_insert_rowid();")
+    return int(out.strip().splitlines()[-1])
+
+
+def _ensure_account() -> int:
+    global _account_id
+    if _account_id is not None:
+        return _account_id
+    out = _sql(CONTACTS_DB, "SELECT _id FROM accounts WHERE account_type='com.android.local' ORDER BY _id LIMIT 1;")
+    if out.strip():
+        _account_id = int(out.strip().splitlines()[0])
+        return _account_id
+    _account_id = _ins_last_id(CONTACTS_DB,
+                               "INSERT INTO accounts (account_name, account_type) VALUES ('Local', 'com.android.local')")
+    return _account_id
+
+
+def contact_clear() -> None:
+    _sql(CONTACTS_DB, "DELETE FROM data; DELETE FROM raw_contacts; DELETE FROM contacts; DELETE FROM groups;")
+    # 保留 accounts（本地账号复用）
+
+
+def _contact_rid(name: str) -> Optional[int]:
+    out = _sql(CONTACTS_DB, f"SELECT _id FROM raw_contacts WHERE display_name={_q(name)} AND deleted=0 "
+                           f"ORDER BY _id DESC LIMIT 1;")
+    return int(out.strip()) if out.strip() else None
+
+
+def contact_find(name: str) -> Optional[int]:
+    return _contact_rid(name)
+
+
+def contact_add(name: str, given: str = "", family: str = "", phones: tuple[tuple[str, int], ...] = (),
+                emails: tuple[tuple[str, int], ...] = (), org: str = "", website: str = "",
+                birthday: str = "") -> int:
+    """新增联系人（name + 可选电话/邮箱/公司/网站/生日），返回 raw_contact_id。"""
+    aid = _ensure_account()
+    cid = _ins_last_id(CONTACTS_DB, f"INSERT INTO contacts (has_phone_number) VALUES ({1 if phones else 0})")
+    rid = _ins_last_id(CONTACTS_DB, f"INSERT INTO raw_contacts (account_id, contact_id, display_name, sort_key) "
+                                   f"VALUES ({aid}, {cid}, {_q(name)}, {_q(name)})")
+    stmts = [f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2, data3, is_primary) "
+             f"VALUES (7, {rid}, {_q(name)}, {_q(given or name)}, {_q(family)}, 1)"]
+    for num, ptype in phones:
+        stmts.append(f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2, is_primary) "
+                     f"VALUES (5, {rid}, {_q(num)}, {int(ptype)}, 1)")
+    for mail, etype in emails:
+        stmts.append(f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2, is_primary) "
+                     f"VALUES (1, {rid}, {_q(mail)}, {int(etype)}, 1)")
+    if org:
+        stmts.append(f"INSERT INTO data (mimetype_id, raw_contact_id, data1) VALUES (4, {rid}, {_q(org)})")
+    if website:
+        stmts.append(f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2) VALUES (14, {rid}, {_q(website)}, 1)")
+    if birthday:
+        stmts.append(f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2) VALUES (13, {rid}, {_q(birthday)}, {_EVENT_BDAY})")
+    stmts.append(f"UPDATE contacts SET name_raw_contact_id={rid} WHERE _id={cid}")
+    _sql(CONTACTS_DB, "; ".join(stmts))
+    return rid
+
+
+def contact_delete(name: str) -> None:
+    rid = _contact_rid(name)
+    if rid:
+        _sql(CONTACTS_DB, f"DELETE FROM raw_contacts WHERE _id={rid};")
+
+
+def contact_phones(name: str) -> list[str]:
+    rid = _contact_rid(name)
+    if not rid:
+        return []
+    out = _sql(CONTACTS_DB, f"SELECT data1 FROM data WHERE raw_contact_id={rid} AND mimetype_id=5 ORDER BY _id;")
+    return [x for x in out.splitlines() if x.strip()]
+
+
+def contact_emails(name: str) -> list[str]:
+    rid = _contact_rid(name)
+    if not rid:
+        return []
+    out = _sql(CONTACTS_DB, f"SELECT data1 FROM data WHERE raw_contact_id={rid} AND mimetype_id=1 ORDER BY _id;")
+    return [x for x in out.splitlines() if x.strip()]
+
+
+def contact_org(name: str) -> str:
+    rid = _contact_rid(name)
+    if not rid:
+        return ""
+    return _sql(CONTACTS_DB, f"SELECT data1 FROM data WHERE raw_contact_id={rid} AND mimetype_id=4 LIMIT 1;").strip()
+
+
+def contact_website(name: str) -> str:
+    rid = _contact_rid(name)
+    if not rid:
+        return ""
+    return _sql(CONTACTS_DB, f"SELECT data1 FROM data WHERE raw_contact_id={rid} AND mimetype_id=14 LIMIT 1;").strip()
+
+
+def contact_birthday(name: str) -> str:
+    rid = _contact_rid(name)
+    if not rid:
+        return ""
+    return _sql(CONTACTS_DB, f"SELECT data1 FROM data WHERE raw_contact_id={rid} AND mimetype_id=13 LIMIT 1;").strip()
+
+
+def contact_add_phone(name: str, number: str, ptype: int = 2) -> None:
+    rid = _contact_rid(name)
+    if not rid:
+        return
+    _sql(CONTACTS_DB, f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2, is_primary) "
+                     f"VALUES (5, {rid}, {_q(number)}, {int(ptype)}, 0);")
+    _sql(CONTACTS_DB, f"UPDATE contacts SET has_phone_number=1 WHERE _id=(SELECT contact_id FROM raw_contacts WHERE _id={rid});")
+
+
+def contact_add_birthday(name: str, birthday: str) -> None:
+    rid = _contact_rid(name)
+    if rid:
+        _sql(CONTACTS_DB, f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2) "
+                         f"VALUES (13, {rid}, {_q(birthday)}, {_EVENT_BDAY});")
+
+
+def contact_set_website(name: str, url: str) -> None:
+    rid = _contact_rid(name)
+    if rid:
+        _sql(CONTACTS_DB, f"INSERT INTO data (mimetype_id, raw_contact_id, data1, data2) "
+                         f"VALUES (14, {rid}, {_q(url)}, 1);")
+
+
+def group_create(title: str, member_names: list[str]) -> int:
+    aid = _ensure_account()
+    gid = _ins_last_id(CONTACTS_DB, f"INSERT INTO groups (account_id, title, group_visible) VALUES ({aid}, {_q(title)}, 1)")
+    for mn in member_names:
+        rid = _contact_rid(mn)
+        if rid:
+            _sql(CONTACTS_DB, f"INSERT INTO data (mimetype_id, raw_contact_id, data1) VALUES (11, {rid}, {gid});")
+    return gid
+
+
+def group_members(title: str) -> list[str]:
+    gid = _sql(CONTACTS_DB, f"SELECT _id FROM groups WHERE title={_q(title)} AND deleted=0 LIMIT 1;").strip()
+    if not gid:
+        return []
+    out = _sql(CONTACTS_DB, f"SELECT r.display_name FROM data d JOIN raw_contacts r ON d.raw_contact_id=r._id "
+                           f"WHERE d.mimetype_id=11 AND d.data1={gid};")
+    return [x for x in out.splitlines() if x.strip()]
+
+
+def _extract_contact_name(text: str) -> str:
+    m = re.search(r"联系人\s*([A-Za-z一-鿿][A-Za-z0-9一-鿿 ]*?)(?=[，,。；;、的添设改删]|$)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _parse_phones(text: str) -> list[tuple[str, int]]:
+    phones: list[tuple[str, int]] = []
+    for m in re.finditer(r"(工作电话|工作手机|手机号|手机|电话|电话号码)\s*[:：]?\s*(\d{4,})", text):
+        phones.append((m.group(2), 3 if "工作" in m.group(1) else 2))
+    return phones
+
+
+def _parse_emails(text: str) -> list[tuple[str, int]]:
+    emails: list[tuple[str, int]] = []
+    for m in re.finditer(r"(工作邮箱|邮箱|email|邮件)\s*[:：]?\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", text, re.I):
+        emails.append((m.group(2), 2 if "工作" in m.group(1) else 1))
+    return emails
+
+
+def _parse_org(text: str) -> str:
+    m = re.search(r"(?:公司|单位|organization|org)\s*(?:是|为|：|:)?\s*([^\s，,。；;、]+(?:\s+[^\s，,。；;、]+)*)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _parse_birthday(text: str) -> str:
+    m = re.search(r"生日\s*(?:是|为|：|:)?\s*(\d{4})[年/.\-](\d{1,2})[月/.\-](\d{1,2})[日号]?", text)
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
+
+
+def _parse_website(text: str) -> str:
+    m = re.search(r"(?:网站|网址|website|url)\s*(?:设为|设成|改成|改为|是|为|：|:)?\s*([a-zA-Z0-9][a-zA-Z0-9.\-]*\.[a-zA-Z0-9.\-]+)", text)
+    return m.group(1) if m else ""
+
+
+def try_contact_op(text: str) -> Optional[str]:
+    """联系人操作确定性路由：新增/删除/加电话/加生日/设网站/建分组。"""
+    if not any(w in text for w in ("联系人", "通讯录", "contact", "分组", "标签")):
+        return None
+    name = _extract_contact_name(text)
+
+    # 新建分组
+    if "分组" in text and re.search(r"(新建|创建|添加|建立)", text):
+        m = re.search(r"分组\s*([A-Za-z一-鿿0-9]+)", text)
+        gname = m.group(1) if m else ""
+        members: list[str] = []
+        mm = re.search(r"把\s*([^加进]+?)\s*(?:加进去|加入|加进)", text)
+        if mm:
+            members = [x.strip() for x in re.split(r"[和、及与,，]", mm.group(1)) if x.strip()]
+        if gname:
+            group_create(gname, members)
+            return f"已新建分组 {gname}，成员 {members}"
+
+    # 删除联系人
+    if re.search(r"(删除|移除|删掉)", text) and name:
+        if _contact_rid(name):
+            contact_delete(name)
+            return f"已删除联系人 {name}"
+        return f"没有找到联系人 {name}"
+
+    # 加生日
+    if "生日" in text and re.search(r"(添加|加|设为|改成|改为|设置)", text) and name:
+        bday = _parse_birthday(text)
+        if _contact_rid(name) and bday:
+            contact_add_birthday(name, bday)
+            return f"已给 {name} 添加生日 {bday}"
+
+    # 设网站
+    if re.search(r"(网站|网址)", text) and name:
+        url = _parse_website(text)
+        if _contact_rid(name) and url:
+            contact_set_website(name, url)
+            return f"已把 {name} 的网站设为 {url}"
+
+    # 加电话（编辑：给联系人X添加工作电话Y —— 「添加」离「电话」很近）
+    if re.search(r"(添加|加|新增).{0,6}(电话|手机|号码)", text) and name:
+        phones = _parse_phones(text)
+        if _contact_rid(name) and phones:
+            num, ptype = phones[0]
+            contact_add_phone(name, num, ptype)
+            return f"已给 {name} 添加{'工作' if ptype == 3 else ''}电话 {num}"
+
+    # 新增联系人
+    if re.search(r"(添加|新建|创建|加一个|加一)", text) and name:
+        phones = _parse_phones(text)
+        emails = _parse_emails(text)
+        contact_add(name, phones=tuple(phones), emails=tuple(emails),
+                    org=_parse_org(text), website=_parse_website(text), birthday=_parse_birthday(text))
+        msg = f"已添加联系人 {name}"
+        if phones:
+            msg += f"，电话 {phones[0][0]}"
+        if emails:
+            msg += f"，邮箱 {emails[0][0]}"
+        return msg
+    return None
+
+
+def try_contact_query(text: str) -> Optional[str]:
+    """联系人查询确定性回答：电话号码/邮箱/生日/公司。"""
+    if not any(w in text for w in ("联系人", "通讯录", "contact")):
+        return None
+    name = _extract_contact_name(text)
+    if not name:
+        return None
+    if re.search(r"(电话|手机|号码)", text) and re.search(r"(多少|是什么|是多少|吗)", text):
+        phones = contact_phones(name)
+        if phones:
+            return f"{name} 的电话号码是 {phones[0]}"
+        return f"联系人 {name} 没有电话"
+    if re.search(r"(邮箱|email|邮件)", text) and re.search(r"(什么|多少|吗)", text):
+        emails = contact_emails(name)
+        if emails:
+            return f"{name} 的邮箱是 {emails[0]}"
+        return f"联系人 {name} 没有邮箱"
+    if "生日" in text and re.search(r"(什么时候|是什么|哪一天|吗)", text):
+        bday = contact_birthday(name)
+        return f"{name} 的生日是 {bday}" if bday else f"联系人 {name} 没有生日"
+    if re.search(r"(公司|单位)", text) and re.search(r"(什么|哪|吗)", text):
+        org = contact_org(name)
+        return f"{name} 的公司是 {org}" if org else f"联系人 {name} 没有公司信息"
+    return None

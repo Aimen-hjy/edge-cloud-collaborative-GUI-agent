@@ -106,6 +106,9 @@ def try_answer(text: str) -> Optional[str]:
     ans = app_data.try_alarm_query(text)
     if ans is not None:
         return ans
+    ans = app_data.try_contact_query(text)
+    if ans is not None:
+        return ans
     # 「飞行模式打开了吗」「WiFi开没开」是状态查询，不是「打开X」动作。
     # 先把「打开了吗/开没开/关了没」这类查询后缀剥掉，剩下设备名再查表。
     m = re.match(r"^(.+?)(?:打开了吗|开了吗|开没开|开启了吗|关闭了吗|关了吗|关没关|"
