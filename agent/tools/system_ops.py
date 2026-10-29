@@ -344,6 +344,12 @@ def try_local_intent(task: str) -> Optional[str]:
     ans = app_data.try_contact_op(task)
     if ans is not None:
         return ans
+    ans = app_data.try_browser_op(task)
+    if ans is not None:
+        return ans
+    ans = app_data.try_migu_op(task)
+    if ans is not None:
+        return ans
     # 设置子页面 intent 优先于开关表：「打开蓝牙设置」是进蓝牙设置页，不是打开蓝牙开关
     page = _try_settings_page(task)
     if page is not None:

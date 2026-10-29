@@ -724,3 +724,233 @@ def try_contact_query(text: str) -> Optional[str]:
         org = contact_org(name)
         return f"{name} 的公司是 {org}" if org else f"联系人 {name} 没有公司信息"
     return None
+
+
+# ── 浏览器（com.zui.browser，lebrowser.db 书签/历史/搜索记录）──────────────────
+BROWSER_DB = "/data/data/com.zui.browser/databases/lebrowser.db"
+
+
+def bookmark_list() -> list[dict]:
+    out = _sql(BROWSER_DB, "SELECT title, url FROM bookmarks WHERE bookmark=1 ORDER BY _id;")
+    marks: list[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        vals = line.split("|")
+        marks.append({"title": vals[0], "url": vals[1] if len(vals) > 1 else ""})
+    return marks
+
+
+def bookmark_add(title: str, url: str) -> None:
+    _sql(BROWSER_DB, f"INSERT INTO bookmarks (title, url, bookmark, visits, date, created) "
+                     f"VALUES ({_q(title)}, {_q(url)}, 1, 0, 0, 0);")
+
+
+def bookmark_delete(title: str) -> None:
+    _sql(BROWSER_DB, f"DELETE FROM bookmarks WHERE title={_q(title)} AND bookmark=1;")
+
+
+def bookmark_exists(title: str) -> bool:
+    out = _sql(BROWSER_DB, f"SELECT COUNT(*) FROM bookmarks WHERE title={_q(title)} AND bookmark=1;")
+    return out.strip() != "0"
+
+
+def bookmark_clear() -> None:
+    _sql(BROWSER_DB, "DELETE FROM bookmarks WHERE bookmark=1;")
+
+
+def history_add(title: str, url: str, date_ms: int) -> None:
+    _sql(BROWSER_DB, f"INSERT INTO history (title, url, icon, visits, date, create_time) "
+                     f"VALUES ({_q(title)}, {_q(url)}, '', 1, {int(date_ms)}, {int(date_ms)});")
+
+
+def history_latest() -> str:
+    return _sql(BROWSER_DB, "SELECT title FROM history ORDER BY date DESC, _id DESC LIMIT 1;").strip()
+
+
+def history_clear() -> None:
+    _sql(BROWSER_DB, "DELETE FROM history;")
+
+
+def history_count() -> int:
+    out = _sql(BROWSER_DB, "SELECT COUNT(*) FROM history;")
+    return int(out.strip() or "0")
+
+
+def search_add(keyword: str, date_ms: int) -> None:
+    _sql(BROWSER_DB, f"INSERT OR IGNORE INTO search_record (search, date, url, visits, created) "
+                     f"VALUES ({_q(keyword)}, {int(date_ms)}, '', 1, {int(date_ms)});")
+
+
+def search_latest() -> str:
+    return _sql(BROWSER_DB, "SELECT search FROM search_record ORDER BY date DESC, _id DESC LIMIT 1;").strip()
+
+
+def search_clear() -> None:
+    _sql(BROWSER_DB, "DELETE FROM search_record;")
+
+
+def _extract_bookmark_title(text: str) -> str:
+    m = re.search(r"(?:标题|名称|名字|叫)\s*(?:是|为|：|:)?\s*([^\s，,。；;、]+)", text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"书签\s*([^\s，,。；;、的]+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _extract_url(text: str) -> str:
+    m = re.search(r"(https?://[^\s，,。；;、]+)", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:网址|链接|url)\s*(?:是|为|：|:)?\s*([a-zA-Z0-9][a-zA-Z0-9.\-/:]+)", text)
+    return m.group(1) if m else ""
+
+
+def try_browser_op(text: str) -> Optional[str]:
+    """浏览器操作确定性路由：添加/删除书签、清空历史/搜索记录。"""
+    if not any(w in text for w in ("书签", "浏览器", "浏览历史", "浏览记录", "搜索记录", "历史记录")):
+        return None
+    if "书签" in text and re.search(r"(添加|新建|收藏|创建|加一个|加一)", text):
+        title = _extract_bookmark_title(text)
+        url = _extract_url(text)
+        if title and url:
+            bookmark_add(title, url)
+            return f"已添加书签 {title}"
+    if "书签" in text and re.search(r"(删除|移除|删掉)", text):
+        title = _extract_bookmark_title(text)
+        if title:
+            bookmark_delete(title)
+            return f"已删除书签 {title}"
+    if re.search(r"(清空|清除|删除).{0,4}(历史|浏览记录)", text):
+        history_clear()
+        return "已清空浏览历史"
+    if re.search(r"(清空|清除|删除).{0,4}(搜索记录|搜索历史)", text):
+        search_clear()
+        return "已清空搜索记录"
+    return None
+
+
+def try_browser_query(text: str) -> Optional[str]:
+    """浏览器查询确定性回答：书签数量/存在性、最近浏览、最近搜索。"""
+    if not any(w in text for w in ("书签", "浏览器", "浏览历史", "浏览记录", "搜索记录", "历史记录")):
+        return None
+    if "书签" in text and re.search(r"(几个|多少个|多少|几项)", text):
+        return f"当前有 {len(bookmark_list())} 个书签"
+    if "书签" in text and "吗" in text and re.search(r"(有|存在|包括)", text):
+        title = _extract_bookmark_title(text)
+        if title:
+            return f"书签{'里有' if bookmark_exists(title) else '里没有'} {title}"
+    if re.search(r"(最近浏览|浏览过什么|最近访问|访问过什么)", text):
+        latest = history_latest()
+        return f"最近浏览过的是 {latest}" if latest else "没有浏览历史"
+    if re.search(r"(搜索过什么|搜索记录|搜索历史)", text):
+        latest = search_latest()
+        return f"最近搜索过的是 {latest}" if latest else "没有搜索记录"
+    return None
+
+
+# ── 咪咕音乐（cmccwm.mobilemusic，migu_music_song_new.db）──────────────────
+# LocalSong=本地音乐，RecentPlaySong=最近播放，收藏态用歌曲行的 mCollectState 字段。
+MIGU_DB = "/data/data/cmccwm.mobilemusic/databases/migu_music_song_new.db"
+
+
+def migu_local_list() -> list[dict]:
+    out = _sql(MIGU_DB, "SELECT songId, songName, singerName, mCollectState FROM LocalSong ORDER BY songId;")
+    songs: list[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        vals = line.split("|")
+        songs.append({"songId": vals[0], "songName": vals[1], "singerName": vals[2] if len(vals) > 2 else "",
+                      "collect": vals[3] if len(vals) > 3 else "0"})
+    return songs
+
+
+def migu_local_add(name: str, singer: str = "", collect: int = 0) -> None:
+    song_id = f"local_{name}"
+    _sql(MIGU_DB, f"INSERT OR REPLACE INTO LocalSong (songId, songName, singerName, album, duration, mCollectState) "
+                 f"VALUES ({_q(song_id)}, {_q(name)}, {_q(singer)}, '', 200000, {int(collect)});")
+
+
+def migu_local_delete(name: str) -> None:
+    _sql(MIGU_DB, f"DELETE FROM LocalSong WHERE songName={_q(name)};")
+
+
+def migu_local_collect(name: str, on: bool) -> None:
+    _sql(MIGU_DB, f"UPDATE LocalSong SET mCollectState={1 if on else 0} WHERE songName={_q(name)};")
+
+
+def migu_local_find(name: str) -> Optional[dict]:
+    for s in migu_local_list():
+        if s["songName"] == name:
+            return s
+    return None
+
+
+def migu_recent_list() -> list[dict]:
+    out = _sql(MIGU_DB, "SELECT songId, songName, singerName FROM RecentPlaySong ORDER BY playDate DESC LIMIT 10;")
+    songs: list[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        vals = line.split("|")
+        songs.append({"songId": vals[0], "songName": vals[1], "singerName": vals[2] if len(vals) > 2 else ""})
+    return songs
+
+
+def migu_recent_add(name: str, singer: str = "", play_date_ms: int = 0) -> None:
+    _sql(MIGU_DB, f"INSERT INTO RecentPlaySong (songId, songName, singerName, playDate) "
+                 f"VALUES ({_q('r_' + name)}, {_q(name)}, {_q(singer)}, {int(play_date_ms)});")
+
+
+def migu_clear() -> None:
+    _sql(MIGU_DB, "DELETE FROM LocalSong; DELETE FROM RecentPlaySong; DELETE FROM LastPlaySong;")
+
+
+def _extract_song_name(text: str) -> str:
+    m = re.search(r"[《「]([^》」]+)[》」]", text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"(?:歌曲|歌)\s*(?:名为|叫|是)?\s*([^\s，,。；;、]+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def try_migu_op(text: str) -> Optional[str]:
+    """咪咕音乐操作确定性路由：加本地歌曲/删除/收藏/取消收藏。"""
+    if not any(w in text for w in ("本地音乐", "本地歌曲", "收藏", "最近播放", "我的音乐", "咪咕")):
+        return None
+    song = _extract_song_name(text)
+    if re.search(r"(加入|添加|下载|导入).{0,6}(本地音乐|本地歌曲|本地)", text) and song:
+        migu_local_add(song)
+        return f"已把歌曲《{song}》加入本地音乐"
+    if "取消收藏" in text and song:
+        if migu_local_find(song):
+            migu_local_collect(song, False)
+            return f"已取消收藏《{song}》"
+    if "收藏" in text and song and re.search(r"(收藏|设为)", text):
+        if migu_local_find(song):
+            migu_local_collect(song, True)
+            return f"已收藏《{song}》"
+    if re.search(r"(删除|移除).{0,4}(本地音乐|本地歌曲|本地)", text) and song:
+        migu_local_delete(song)
+        return f"已删除本地歌曲《{song}》"
+    return None
+
+
+def try_migu_query(text: str) -> Optional[str]:
+    """咪咕音乐查询确定性回答：本地歌曲数/存在性、最近播放、收藏列表。"""
+    if not any(w in text for w in ("本地音乐", "本地歌曲", "收藏", "最近播放", "我的音乐", "咪咕")):
+        return None
+    if re.search(r"(本地音乐|本地歌曲|本地)", text) and re.search(r"(几首|多少个|多少|几项)", text):
+        return f"本地音乐有 {len(migu_local_list())} 首歌"
+    if "最近播放" in text:
+        rec = migu_recent_list()
+        return f"最近播放过的是《{rec[0]['songName']}》" if rec else "没有最近播放记录"
+    if "收藏" in text and re.search(r"(哪些|什么|几首|多少)", text):
+        fav = [s["songName"] for s in migu_local_list() if s.get("collect") == "1"]
+        return f"收藏的歌曲有：{'、'.join(fav)}" if fav else "没有收藏歌曲"
+    if re.search(r"(本地音乐|本地歌曲)", text) and "吗" in text and re.search(r"(有|存在)", text):
+        song = _extract_song_name(text)
+        if song:
+            return f"本地音乐{'里有' if migu_local_find(song) else '里没有'}《{song}》"
+    return None
