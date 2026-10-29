@@ -38,6 +38,13 @@ def _hist_count() -> int:
     return app_data.history_count()
 
 
+def _bm_url(title: str):
+    for m in app_data.bookmark_list():
+        if m["title"] == title:
+            return m["url"]
+    return None
+
+
 # (task_id, 中文指令, setup, verify)。verify(r) -> bool。
 TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("browser_1", "我有几个书签？",
@@ -69,6 +76,23 @@ TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("browser_8", "添加书签，标题是哔哩哔哩，网址是https://www.bilibili.com",
      lambda: _reset(),
      lambda r: _bm("哔哩哔哩")),
+    # ── 难题：修改类 / 条件删除 / 反查 / 去重计数，当前确定性路由覆盖不到 ──
+    ("browser_9", "把书签知乎的网址改成https://www.zhihu.com/question",
+     lambda: (_reset(), app_data.bookmark_add("知乎", "https://www.zhihu.com")),
+     lambda r: _bm_url("知乎") == "https://www.zhihu.com/question"),
+    ("browser_10", "删除我所有的书签",
+     lambda: (_reset(), app_data.bookmark_add("百度", "http://m.baidu.com/"),
+              app_data.bookmark_add("新浪", "http://sina.cn/"),
+              app_data.bookmark_add("网易", "http://3g.163.com/")),
+     lambda r: len(app_data.bookmark_list()) == 0),
+    ("browser_11", "我的书签里网址是http://sina.cn/的书签叫什么",
+     lambda: (_reset(), app_data.bookmark_add("新浪", "http://sina.cn/")),
+     lambda r: "新浪" in r["reason"]),
+    ("browser_12", "浏览历史里一共访问过几个不同的网页",
+     lambda: (_reset(), app_data.history_add("知乎", "https://www.zhihu.com", 2000),
+              app_data.history_add("知乎", "https://www.zhihu.com", 3000),
+              app_data.history_add("新浪", "http://sina.cn/", 1000)),
+     lambda r: "2" in r["reason"]),
 ]
 
 

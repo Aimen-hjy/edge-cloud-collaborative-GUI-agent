@@ -59,6 +59,24 @@ TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("migu_8", "删除本地歌曲《平凡之路》",
      lambda: (_reset(), app_data.migu_local_add("平凡之路")),
      lambda r: _find("平凡之路") is None),
+    # ── 难题：收藏计数 / 改元数据 / 按条件删除 / 存在性 yes-no，当前确定性路由覆盖不到 ──
+    ("migu_9", "我收藏了几首歌？",
+     lambda: (_reset(), app_data.migu_local_add("晴天", collect=0),
+              app_data.migu_local_add("平凡之路", collect=1),
+              app_data.migu_local_add("海阔天空", collect=1)),
+     lambda r: "2" in r["reason"]),
+    ("migu_10", "把歌曲《晴天》的歌手改成周杰伦",
+     lambda: (_reset(), app_data.migu_local_add("晴天", singer="")),
+     lambda r: _find("晴天") is not None and _find("晴天")["singerName"] == "周杰伦"),
+    ("migu_11", "删除我收藏的所有歌曲",
+     lambda: (_reset(), app_data.migu_local_add("晴天", collect=0),
+              app_data.migu_local_add("平凡之路", collect=1),
+              app_data.migu_local_add("海阔天空", collect=1)),
+     lambda r: all(s.get("collect") != "1" for s in app_data.migu_local_list())),
+    ("migu_12", "我最近播放过《晴天》吗？",
+     lambda: (_reset(), app_data.migu_recent_add("平凡之路", play_date_ms=2000),
+              app_data.migu_recent_add("海阔天空", play_date_ms=1000)),
+     lambda r: "没有" in r["reason"]),
 ]
 
 
