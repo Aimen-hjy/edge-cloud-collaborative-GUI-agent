@@ -115,6 +115,13 @@ TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("calendar_14", "把日程exam设为全天",
      lambda: (_reset(), _add("exam")),
      lambda r: _ev("exam") is not None and _ev("exam")["allDay"] == "1"),
+    # ── 难题：删除日程 / 删除所有日程，当前确定性路由覆盖不到 ──
+    ("calendar_15", "删除日程work",
+     lambda: (_reset(), _add("work", 17)),
+     lambda r: _ev("work") is None),
+    ("calendar_16", "删除所有日程",
+     lambda: (_reset(), _add("work", 9), _add("meeting", 10)),
+     lambda r: len(app_data.event_list()) == 0),
 ]
 
 

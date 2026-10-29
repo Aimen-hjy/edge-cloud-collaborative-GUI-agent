@@ -94,6 +94,16 @@ TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("contacts_15", "联系人AAA的公司是什么",
      lambda: (_reset(), app_data.contact_add("AAA", org="Tsinghua University")),
      lambda r: "Tsinghua" in r["reason"]),
+    # ── 难题：改电话 / 电话计数 / 删电话，当前确定性路由覆盖不到 ──
+    ("contacts_16", "把联系人John的手机号改成99999999",
+     lambda: (_reset(), app_data.contact_add("John", phones=(("12345678", 2),))),
+     lambda r: "99999999" in _phones("John") and "12345678" not in _phones("John")),
+    ("contacts_17", "联系人John有几个电话号码",
+     lambda: (_reset(), app_data.contact_add("John", phones=(("12345678", 2), ("87654321", 2)))),
+     lambda r: "2" in r["reason"]),
+    ("contacts_18", "删除联系人John的工作电话",
+     lambda: (_reset(), app_data.contact_add("John", phones=(("12345678", 3),))),
+     lambda r: _has("John") and len(_phones("John")) == 0),
 ]
 
 

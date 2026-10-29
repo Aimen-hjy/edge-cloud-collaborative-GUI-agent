@@ -93,6 +93,10 @@ TASKS: list[tuple[str, str, Callable[[], None], Callable[[dict], bool]]] = [
     ("clock_14", "9点的闹钟开了吗",
      lambda: (_reset(), app_data.alarm_add(9, 0)),
      lambda r: "开着" in r["reason"]),
+    # ── 难题：删除所有闹钟，当前确定性路由覆盖不到 ──
+    ("clock_15", "删除所有闹钟",
+     lambda: (_reset(), app_data.alarm_add(8, 0), app_data.alarm_add(20, 0)),
+     lambda r: len(app_data.alarm_list()) == 0),
 ]
 
 
