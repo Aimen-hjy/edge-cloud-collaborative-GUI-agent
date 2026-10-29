@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
-from . import adb
+from . import adb, app_data
 
 
 def _parse_battery(out: str) -> str:
@@ -94,13 +94,18 @@ _QUERIES: list[tuple[tuple[str, ...], list[str], Callable[[str], str]]] = [
 # 不是查询词（「在状态栏显示电量百分比」是改设置，不是查电量）。
 _ACTION_VERBS = ("打开", "启动", "进入", "点击", "设置", "关闭", "开启", "切换", "修改", "调整",
                  "调到", "调成", "调为", "调至", "设为", "改成", "改为", "换成", "添加",
-                 "状态栏", "百分比")
+                 "删除", "移除", "删掉", "状态栏", "百分比")
 
 
 def try_answer(text: str) -> Optional[str]:
     """文本命中系统查询表 → 执行 shell 命令并返回人话结果；否则返回 None（走正常流程）。"""
     if not text:
         return None
+    # 应用级数据查询（闹钟等）：必须在后缀剥离之前判，否则「9点的闹钟开了吗」的
+    # 「开了吗」会被下面剥掉、query 就认不出这是「是否开启」查询了。
+    ans = app_data.try_alarm_query(text)
+    if ans is not None:
+        return ans
     # 「飞行模式打开了吗」「WiFi开没开」是状态查询，不是「打开X」动作。
     # 先把「打开了吗/开没开/关了没」这类查询后缀剥掉，剩下设备名再查表。
     m = re.match(r"^(.+?)(?:打开了吗|开了吗|开没开|开启了吗|关闭了吗|关了吗|关没关|"

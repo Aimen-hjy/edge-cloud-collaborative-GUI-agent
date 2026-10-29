@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..config import CLOUD_ENDPOINT, LOCAL_ENDPOINT
-from ..device import adb, ui
+from ..device import adb, app_data, ui
 from ..llm.client import LLMClient, extract_json, text_msg
 from ..llm.prompts import CHAT_SYSTEM, SYSTEM_ROUTER_SYSTEM, SYSTEM_ROUTER_USER
 
@@ -334,6 +334,10 @@ def try_local_intent(task: str) -> Optional[str]:
     """
     if not task:
         return None
+    # 应用级数据操作（闹钟/日历/联系人）：经 ContentProvider/sqlite3 直接改真机状态。
+    ans = app_data.try_alarm_op(task)
+    if ans is not None:
+        return ans
     # 设置子页面 intent 优先于开关表：「打开蓝牙设置」是进蓝牙设置页，不是打开蓝牙开关
     page = _try_settings_page(task)
     if page is not None:
