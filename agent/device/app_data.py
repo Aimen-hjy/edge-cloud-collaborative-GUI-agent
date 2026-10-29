@@ -14,6 +14,7 @@ sqlite3 只要 ~0.2s，所以这里一律走 sqlite3；provider 是实时读表�
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from . import adb
@@ -235,3 +236,212 @@ def try_alarm_query(text: str) -> Optional[str]:
                     return f"{h:02d}:{mm:02d} 有闹钟"
             return f"{h:02d}:{mm:02d} 没有闹钟"
     return None
+
+
+# ── 日历（com.android.providers.calendar，Events/Reminders 表）──────────────────
+# dtstart/dtend 为 UTC 毫秒；eventTimezone 存 Asia/Beijing（本机 Local Calendar=1）。
+# rrule 存 iCalendar 字符串（FREQ=DAILY/WEEKLY/MONTHLY）。Reminders 表 minutes=提前分钟数。
+CAL_DB = "/data/data/com.android.providers.calendar/databases/calendar.db"
+CAL_ID = 1  # 本机「Local Calendar」的 calendar_id
+_CAL_TZ = timezone(timedelta(hours=8))  # Asia/Beijing，无夏令时
+_EVENT_COLS = ["_id", "title", "description", "dtstart", "dtend", "allDay", "rrule", "hasAlarm"]
+
+
+def _now_device() -> datetime:
+    """设备当前时刻（Asia/Beijing），用设备 epoch 秒避免宿主机时钟偏差。"""
+    s = int(adb.run_text("shell", "date", "+%s").strip())
+    return datetime.fromtimestamp(s, tz=_CAL_TZ)
+
+
+def _to_ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+
+def event_list() -> list[dict]:
+    out = _sql(CAL_DB, "SELECT " + ", ".join(_EVENT_COLS) +
+               " FROM Events WHERE deleted=0 ORDER BY _id;")
+    events: list[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        vals = line.split("|")
+        events.append({_EVENT_COLS[i]: (vals[i] if i < len(vals) else "")
+                       for i in range(len(_EVENT_COLS))})
+    return events
+
+
+def event_find(title: str) -> Optional[dict]:
+    for e in reversed(event_list()):
+        if e.get("title") == title:
+            return e
+    return None
+
+
+def event_clear() -> None:
+    _sql(CAL_DB, "DELETE FROM Events;")
+    _sql(CAL_DB, "DELETE FROM Reminders;")
+
+
+def event_add(title: str, dtstart_ms: int, dtend_ms: int, description: str = "",
+              allDay: int = 0, rrule: str = "", reminders: tuple[int, ...] = ()) -> int:
+    """sqlite3 直插事件（~0.2s）。有提醒则顺带插 Reminders 并把 hasAlarm=1。"""
+    has_alarm = 1 if reminders else 0
+    _sql(CAL_DB, f"INSERT INTO Events (calendar_id, title, description, dtstart, dtend, "
+                 f"eventTimezone, allDay, rrule, hasAlarm) VALUES "
+                 f"({CAL_ID}, {_q(title)}, {_q(description)}, {dtstart_ms}, {dtend_ms}, "
+                 f"'Asia/Beijing', {int(allDay)}, {_q(rrule)}, {has_alarm});")
+    eid = int(event_find(title)["_id"])
+    for m in reminders:
+        _sql(CAL_DB, f"INSERT INTO Reminders (event_id, minutes, method) VALUES ({eid}, {int(m)}, 1);")
+    return eid
+
+
+def event_update(title: str, **fields) -> None:
+    sets = [f"{k}={_q(v)}" if isinstance(v, str) else f"{k}={int(v)}"
+            for k, v in fields.items()]
+    if sets:
+        _sql(CAL_DB, f"UPDATE Events SET {', '.join(sets)} WHERE title={_q(title)} AND deleted=0;")
+
+
+def event_reminders(title: str) -> list[int]:
+    e = event_find(title)
+    if not e:
+        return []
+    out = _sql(CAL_DB, f"SELECT minutes FROM Reminders WHERE event_id={e['_id']} ORDER BY minutes;")
+    return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def reminder_clear(title: str) -> None:
+    e = event_find(title)
+    if e:
+        _sql(CAL_DB, f"DELETE FROM Reminders WHERE event_id={e['_id']};")
+
+
+def reminder_add(title: str, minutes: int) -> None:
+    e = event_find(title)
+    if e:
+        _sql(CAL_DB, f"INSERT INTO Reminders (event_id, minutes, method) VALUES ({e['_id']}, {int(minutes)}, 1);")
+        _sql(CAL_DB, f"UPDATE Events SET hasAlarm=1 WHERE _id={e['_id']};")
+
+
+def _extract_event_title(text: str) -> str:
+    """提取日程标题：优先「标题是/叫/名为 X」，否则取「日程/事件」后紧跟的英文 token。"""
+    m = re.search(r"(?:标题|题目|名字|名称|叫|叫作|名为)\s*(?:是|为|：|:)?\s*([A-Za-z0-9][A-Za-z0-9 _-]*)", text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"(?:日程|事件|event)\s*(?:一(?:个|条|项))?\s*([A-Za-z][A-Za-z0-9 _-]*?)"
+                  r"(?=\s*(?:的|添加|改为|改成|设为|设成|调成|调为|结束|提醒|备注|重复|全天|，|,|。|$))", text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return ""
+
+
+def _parse_event_date(text: str) -> Optional[datetime]:
+    now = _now_device()
+    if "后天" in text:
+        return now + timedelta(days=2)
+    if "明天" in text:
+        return now + timedelta(days=1)
+    if "今天" in text:
+        return now
+    m = re.search(r"(\d{4})\s*[年/.\-]\s*(\d{1,2})\s*[月/.\-]\s*(\d{1,2})\s*[日号]?", text)
+    if m:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=_CAL_TZ)
+    m = re.search(r"(\d{1,2})\s*[月/.\-]\s*(\d{1,2})\s*[日号]?", text)
+    if m:
+        return datetime(now.year, int(m.group(1)), int(m.group(2)), tzinfo=_CAL_TZ)
+    return None
+
+
+def _parse_rrule(text: str) -> str:
+    if re.search(r"每月|每个月|monthly", text, re.I):
+        return "FREQ=MONTHLY"
+    if re.search(r"每周|每个星期|weekly", text, re.I):
+        return "FREQ=WEEKLY"
+    if re.search(r"每天|每日|daily", text, re.I):
+        return "FREQ=DAILY"
+    return ""
+
+
+def _parse_reminders(text: str) -> list[int]:
+    # 「提前5分钟和10分钟」「提前5、10分钟」：取「提前」之后出现的所有数字，
+    # 避免「提前」只写一次、后面的分钟数漏掉。
+    m = re.search(r"提前", text)
+    if not m:
+        return []
+    return [int(x) for x in re.findall(r"\d+", text[m.end():])]
+
+
+def _parse_note(text: str) -> str:
+    m = re.search(r"备注\s*(?:是|为|：|:)?\s*(.+?)\s*$", text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"(?:note|Note)\s*(.+?)\s*$", text)
+    return m.group(1).strip() if m else ""
+
+
+_FREQ_CN = {"FREQ=DAILY": "每天", "FREQ=WEEKLY": "每周", "FREQ=MONTHLY": "每月"}
+
+
+def try_calendar_op(text: str) -> Optional[str]:
+    """日历操作确定性路由：添加日程 / 改结束时间 / 加备注 / 改提醒 / 改重复 / 设全天。"""
+    if not any(w in text for w in ("日程", "日历", "事件", "event")):
+        return None
+    title = _extract_event_title(text)
+    note = _parse_note(text)
+    rrule = _parse_rrule(text)
+    reminders = _parse_reminders(text)
+    is_edit = bool(re.search(r"(把日程|给日程|编辑日程|修改日程|将日程|对日程)", text))
+
+    if is_edit:
+        if not title or not event_find(title):
+            return f"没有找到日程 {title}"
+        # 加备注（先于其它编辑分支：备注文本里可能不含「结束/重复」等词）
+        if note and "备注" in text:
+            cur = event_find(title)
+            desc = ((cur.get("description") or "").strip() + " " + note).strip()
+            event_update(title, description=desc)
+            return f"已给日程 {title} 添加备注 {note}"
+        if "结束" in text:
+            tm = parse_time(text)
+            if tm:
+                h, m = tm
+                dtstart = int(event_find(title)["dtstart"])
+                d = datetime.fromtimestamp(dtstart / 1000, tz=_CAL_TZ)
+                event_update(title, dtend=_to_ms(d.replace(hour=h, minute=m, second=0, microsecond=0)))
+                return f"已把日程 {title} 结束时间改为 {h:02d}:{m:02d}"
+        if rrule:
+            event_update(title, rrule=rrule)
+            return f"已把日程 {title} 设为{_FREQ_CN.get(rrule, rrule)}重复"
+        if reminders:
+            reminder_clear(title)
+            for m in reminders:
+                reminder_add(title, m)
+            return f"已把日程 {title} 提醒改为提前 {'、'.join(map(str, reminders))} 分钟"
+        if "全天" in text:
+            event_update(title, allDay=1)
+            return f"已把日程 {title} 设为全天"
+        return None
+
+    # 添加日程
+    if not re.search(r"(安排|添加|新建|创建|加一(?:个|条)|帮我.{0,4}(?:安排|创建))", text):
+        return None
+    d = _parse_event_date(text)
+    now = _now_device()
+    if d is None:
+        d = now
+    tm = parse_time(text)
+    h, m = tm if tm else (9, 0)
+    dtstart = d.replace(hour=h, minute=m, second=0, microsecond=0)
+    dtend = dtstart + timedelta(hours=1)
+    allDay = 1 if "全天" in text else 0
+    if not title:
+        title = "新日程"
+    event_add(title, _to_ms(dtstart), _to_ms(dtend), description=note, allDay=allDay,
+              rrule=rrule, reminders=tuple(reminders))
+    msg = f"已添加日程 {title}"
+    if note:
+        msg += f"，备注 {note}"
+    if reminders:
+        msg += f"，提前 {reminders[0]} 分钟提醒"
+    return msg
