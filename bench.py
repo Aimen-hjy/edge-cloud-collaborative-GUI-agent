@@ -5,7 +5,7 @@
     python bench.py "打开设置" "关闭WiFi"   # 跑指定任务
 
 输出每项任务的 {成功/失败, 步数, 总耗时, 平均单步耗时}，最后汇总成功率与平均单步耗时。
-单步耗时 = 总耗时 / 步数（步数=0 的纯查询/路由任务按总耗时计，不计入单步平均）。
+单步耗时 = 总耗时 / 步数；0 步任务（纯查询/本地路由）按 1 步计，参与平均。
 """
 from __future__ import annotations
 
@@ -95,17 +95,17 @@ def main() -> None:
         steps = r.get("steps", 0)
         success = r.get("success", False)
         rows.append((task, success, steps, dt))
-        step_avg = dt / steps if steps > 0 else dt
+        step_avg = dt / max(steps, 1)
         print(f"{task:<16} {'✅' if success else '❌':<6} {steps:>3} {dt:>6.2f}s {step_avg:>6.2f}s")
         ok += success
-        total_steps += steps
+        total_steps += max(steps, 1)  # 0 步任务按 1 步计，参与平均
         total_time += dt
 
     n = len(tasks)
     print("-" * 48)
     print(f"成功率: {ok}/{n} = {ok / n * 100:.0f}%")
     if total_steps > 0:
-        print(f"平均单步耗时(仅多步任务): {total_time / total_steps:.2f}s")
+        print(f"平均单步耗时(0步按1步计): {total_time / total_steps:.2f}s")
 
 
 if __name__ == "__main__":

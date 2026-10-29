@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..config import CLOUD_ENDPOINT, LOCAL_ENDPOINT
-from ..device import adb
+from ..device import adb, ui
 from ..llm.client import LLMClient, extract_json, text_msg
 from ..llm.prompts import CHAT_SYSTEM, SYSTEM_ROUTER_SYSTEM, SYSTEM_ROUTER_USER
 
@@ -57,6 +57,12 @@ def _set_wifi(p: dict) -> str:
     return f"WiFi 已{'开启' if on else '关闭'}"
 
 
+def _set_wifi_auto(p: dict) -> str:
+    on = bool(p.get("on", False))
+    adb.run_text("shell", "settings", "put", "global", "wifi_wakeup_enabled", "1" if on else "0")
+    return f"WiFi自动开启已{'开启' if on else '关闭'}"
+
+
 def _set_bluetooth(p: dict) -> str:
     on = bool(p.get("on", False))
     adb.run_text("shell", "svc", "bluetooth", "enable" if on else "disable")
@@ -73,6 +79,21 @@ def _set_volume(p: dict) -> str:
     lvl = max(0, min(15, int(p.get("level", 5))))
     adb.run_text("shell", "media", "volume", "--set", str(lvl))
     return f"媒体音量已设为 {lvl}"
+
+
+def _set_ring_volume(p: dict) -> str:
+    # 本机铃声/通知流上限是 7，且 media volume 只改 volume_ring（非 speaker 键）；
+    # 判分/系统读的是 volume_ring_speaker，直接写 settings 键才生效。
+    lvl = max(0, min(7, int(p.get("level", 3))))
+    adb.run_text("shell", "settings", "put", "system", "volume_ring_speaker", str(lvl))
+    return f"铃声和通知音量已设为 {lvl}"
+
+
+def _set_alarm_volume(p: dict) -> str:
+    # 闹钟流上限 7；media volume 改的是 volume_alarm，判分读 volume_alarm_speaker。
+    lvl = max(0, min(7, int(p.get("level", 3))))
+    adb.run_text("shell", "settings", "put", "system", "volume_alarm_speaker", str(lvl))
+    return f"闹钟音量已设为 {lvl}"
 
 
 def _set_airplane(p: dict) -> str:
@@ -95,6 +116,45 @@ def _wake_screen(_p: dict) -> str:
     return "已亮屏"
 
 
+def _set_dark_theme(p: dict) -> str:
+    on = bool(p.get("on", True))
+    adb.run_text("shell", "settings", "put", "secure", "ui_night_mode", "2" if on else "1")
+    return f"已{'开启深色主题' if on else '关闭深色主题'}"
+
+
+def _set_ring_vibrate(p: dict) -> str:
+    on = bool(p.get("on", False))
+    adb.run_text("shell", "settings", "put", "system", "vibrate_when_ringing", "1" if on else "0")
+    return f"铃声振动已{'开启' if on else '关闭'}"
+
+
+def _set_private_dns(p: dict) -> str:
+    host = (p.get("host") or "").strip()
+    if host:
+        adb.run_text("shell", "settings", "put", "global", "private_dns_mode", "hostname")
+        adb.run_text("shell", "settings", "put", "global", "private_dns_specifier", host)
+        return f"私有DNS已设为 {host}"
+    adb.run_text("shell", "settings", "put", "global", "private_dns_mode", "off")
+    return "私有DNS已关闭"
+
+
+def _set_app_notification(p: dict) -> str:
+    pkg = (p.get("pkg") or "").strip()
+    on = bool(p.get("on", True))
+    if not pkg:
+        return "未指定应用"
+    adb.run_text("shell", "cmd", "appops", "set", pkg, "POST_NOTIFICATION",
+                 "allow" if on else "ignore")
+    return f"{pkg} 通知已{'开启' if on else '关闭'}"
+
+
+def _set_battery_percent(p: dict) -> str:
+    on = bool(p.get("on", True))
+    adb.run_text("shell", "settings", "put", "system",
+                 "status_bar_show_battery_percent", "1" if on else "0")
+    return f"已{'在状态栏显示' if on else '隐藏'}电量百分比"
+
+
 # (能力名, 说明, 参数说明, 执行器) —— 只增不改命令，模型只能从这里挑
 CAPABILITIES: list[Capability] = [
     Capability("query_battery", "查询当前电量", "无参数", _query_battery),
@@ -102,9 +162,17 @@ CAPABILITIES: list[Capability] = [
     Capability("query_storage", "查询剩余存储空间", "无参数", _query_storage),
     Capability("query_memory", "查询可用内存", "无参数", _query_memory),
     Capability("set_wifi", "开启或关闭 WiFi", "on: true/false", _set_wifi),
+    Capability("set_wifi_auto", "开启或关闭WiFi自动开启/自动连接", "on: true/false", _set_wifi_auto),
     Capability("set_bluetooth", "开启或关闭蓝牙", "on: true/false", _set_bluetooth),
     Capability("set_brightness", "调整屏幕亮度的明暗程度", "level: 0~255 整数", _set_brightness),
     Capability("set_volume", "调整媒体音量", "level: 0~15 整数", _set_volume),
+    Capability("set_ring_volume", "调整铃声和通知音量", "level: 0~15 整数", _set_ring_volume),
+    Capability("set_alarm_volume", "调整闹钟音量", "level: 0~15 整数", _set_alarm_volume),
+    Capability("set_dark_theme", "开启或关闭深色主题（夜间模式）", "on: true/false", _set_dark_theme),
+    Capability("set_ring_vibrate", "开启或关闭来电铃声振动", "on: true/false", _set_ring_vibrate),
+    Capability("set_private_dns", "设置私有DNS主机名，留空则关闭", "host: 主机名如 dns.google", _set_private_dns),
+    Capability("set_app_notification", "开启或关闭某个应用的通知", "pkg: 包名, on: true/false", _set_app_notification),
+    Capability("set_battery_percent", "在状态栏显示或隐藏电量百分比", "on: true/false", _set_battery_percent),
     Capability("set_airplane", "开启或关闭飞行模式", "on: true/false", _set_airplane),
     Capability("lock_screen", "锁屏", "无参数", _lock_screen),
     Capability("wake_screen", "唤醒/点亮屏幕（黑屏变亮）", "无参数", _wake_screen),
@@ -165,6 +233,8 @@ def dispatch(name: Optional[str], params: Optional[dict]) -> Optional[str]:
 
 # (触发词, 能力名, 参数)。触发词本身即「修改意图」，无需再判 _ACTION_VERBS。
 _KEYWORD_OPS: list[tuple[tuple[str, ...], str, dict]] = [
+    (("关闭wifi自动开启", "关wifi自动开启", "wifi自动开启关", "关闭wifi自动连接", "关wifi自动连接"), "set_wifi_auto", {"on": False}),
+    (("打开wifi自动开启", "开wifi自动开启", "wifi自动开启开", "打开wifi自动连接"), "set_wifi_auto", {"on": True}),
     (("关闭wifi", "关wifi", "wifi关", "wifi关闭"), "set_wifi", {"on": False}),
     (("打开wifi", "开wifi", "wifi开", "wifi开启"), "set_wifi", {"on": True}),
     (("关闭蓝牙", "关蓝牙", "蓝牙关", "蓝牙关闭"), "set_bluetooth", {"on": False}),
@@ -172,12 +242,23 @@ _KEYWORD_OPS: list[tuple[tuple[str, ...], str, dict]] = [
     (("关闭飞行模式", "关飞行模式", "飞行模式关"), "set_airplane", {"on": False}),
     (("打开飞行模式", "开飞行模式", "飞行模式开"), "set_airplane", {"on": True}),
     (("静音", "关声音", "关闭声音", "消音"), "set_volume", {"level": 0}),
+    (("显示电量百分比", "电量百分比显示", "显示电池百分比", "状态栏显示电量"), "set_battery_percent", {"on": True}),
+    (("隐藏电量百分比", "关闭电量百分比", "取消显示电量", "不显示电量百分比"), "set_battery_percent", {"on": False}),
     (("亮度最高", "最亮", "调到最亮", "亮度最大"), "set_brightness", {"level": 255}),
     (("亮度最低", "最暗", "调到最暗", "亮度最小"), "set_brightness", {"level": 10}),
     (("调亮", "变亮", "提高亮度", "增加亮度", "亮度调高"), "set_brightness", {"level": 220}),
     (("调暗", "变暗", "降低亮度", "减少亮度", "亮度调低"), "set_brightness", {"level": 60}),
+    (("铃声音量调大", "铃声调大", "通知音量调大", "铃声音量加大"), "set_ring_volume", {"level": 10}),
+    (("铃声音量调小", "铃声调小", "通知音量调小", "铃声音量减小"), "set_ring_volume", {"level": 3}),
+    (("闹钟音量调到最大", "闹钟音量最大", "闹钟调大", "闹钟音量调大"), "set_alarm_volume", {"level": 15}),
+    (("闹钟音量调到最小", "闹钟音量最小", "闹钟调小", "闹钟音量调小"), "set_alarm_volume", {"level": 0}),
     (("音量调大", "调大音量", "音量加大", "声音调大", "加大音量"), "set_volume", {"level": 10}),
     (("音量调小", "调小音量", "音量减小", "声音调小", "减小音量"), "set_volume", {"level": 3}),
+    (("浅色主题", "浅色模式", "亮色模式", "亮色主题", "日间模式", "关闭深色", "关闭暗色", "关闭深色主题"), "set_dark_theme", {"on": False}),
+    (("深色主题", "深色模式", "暗色模式", "黑暗模式", "夜间模式", "打开深色", "开启深色", "打开深色主题"), "set_dark_theme", {"on": True}),
+    (("关闭铃声振动", "关铃声振动", "铃声振动关", "关闭铃声震动", "关铃声震动"), "set_ring_vibrate", {"on": False}),
+    (("打开铃声振动", "开铃声振动", "铃声振动开", "开启铃声振动"), "set_ring_vibrate", {"on": True}),
+    (("关闭私有dns", "关私有dns", "私有dns关"), "set_private_dns", {}),
 ]
 
 # 中文应用名 → 包名。「打开X」这类任务 monkey 拉起 <1s，不必烧云端规划。
@@ -257,7 +338,17 @@ def try_local_intent(task: str) -> Optional[str]:
     page = _try_settings_page(task)
     if page is not None:
         return page
-    # 「调到/调成 N%」显式百分比：亮度 / 音量。关键词表只收语义词（调亮/最暗），
+    # 「铃声/通知/闹钟/媒体 音量调到 N%」→ 对应音量流（默认媒体）
+    mv = re.search(r"(铃声|通知|闹钟|媒体|音乐).{0,4}音量.{0,4}(?:调到|调成|调为|调至)\s*(\d{1,3})\s*%", task)
+    if mv:
+        stream = mv.group(1)
+        lvl = round(int(mv.group(2)) / 100 * 15)
+        if "闹钟" in stream:
+            return dispatch("set_alarm_volume", {"level": lvl})
+        if "媒体" in stream or "音乐" in stream:
+            return dispatch("set_volume", {"level": lvl})
+        return dispatch("set_ring_volume", {"level": lvl})
+    # 「亮度/音量 调到 N%」→ 亮度 / 媒体音量。关键词表只收语义词（调亮/最暗），
     # 具体百分比走这条正则确定性直达，省得漏到云端被误判成「查询亮度」。
     m = re.search(r"(亮度|音量).{0,4}(?:调到|调成|调为|调至)\s*(\d{1,3})\s*%", task)
     if m:
@@ -265,14 +356,42 @@ def try_local_intent(task: str) -> Optional[str]:
         if kind == "亮度":
             return dispatch("set_brightness", {"level": round(pct / 100 * 255)})
         return dispatch("set_volume", {"level": round(pct / 100 * 15)})
+    # 「私有DNS设为X」→ settings put global（云端点「私有DNS」列表项不可靠）
+    md = re.search(r"dns.{0,8}(?:设为|设成|改成|改为|换成|设置为)\s*([a-z0-9][a-z0-9.\-]*\.[a-z0-9.\-]+)", task, re.I)
+    if md:
+        return dispatch("set_private_dns", {"host": md.group(1).lower()})
+    # 「关闭/打开 某应用 的通知」→ cmd appops（比云端点应用通知页稳）
+    mn = re.search(r"(关闭|打开|开启|关|开)\s*(.{1,8}?)\s*的?\s*通知", task)
+    if mn:
+        pkg = APP_PACKAGES.get(mn.group(2).strip())
+        if pkg:
+            return dispatch("set_app_notification", {"pkg": pkg, "on": mn.group(1) in ("打开", "开启", "开")})
     low = task.lower()
+    # 「关闭/打开 WiFi 自动开启/连接」是「自动开启」子开关，不是 WiFi 本体开关，
+    # 别被「关闭wifi」关键词误吞成关 WiFi，交给云端（本地无「自动开启」能力）。
+    auto_wifi = "wifi" in low and re.search(r"wifi.{0,8}(?:自动开启|自动连接|自动打开)", low) is not None
     for keywords, cap, params in _KEYWORD_OPS:
+        if cap == "set_wifi" and auto_wifi:
+            continue
         if any(k in low for k in keywords):
             return dispatch(cap, params)
     nav = _try_nav(task)
     if nav is not None:
         return nav
-    return try_launch_app(task)
+    app = try_launch_app(task)
+    if app is not None:
+        return app
+    # 「点击X」「点X」→ UI 树文本匹配直接 tap（确定性，不调模型、不上云）。
+    # 放在关键词/导航/打开App之后，作为 GUI 任务的最后本地兜底；找不到就升级云端。
+    mt = re.match(r"^(?:点击|点一下|点|按下|tap)\s*(.{1,12}?)\s*(?:按钮|选项|项|键)?\s*$", task.strip())
+    if mt:
+        target = mt.group(1).strip()
+        # 单字目标（如「点评」里的「评」）太容易误中，要求至少 2 字。
+        if len(target) >= 2 and target not in ("屏幕", "图标", "按钮", "页面", "链接", "菜单"):
+            ans = ui.tap_by_text(target)
+            if ans is not None:
+                return ans
+    return None
 
 
 _HOME_WORDS = ("回到桌面", "回桌面", "回主屏幕", "返回桌面", "回主页", "返回主屏幕", "到桌面", "回首页")
